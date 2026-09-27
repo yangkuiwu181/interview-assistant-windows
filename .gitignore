@@ -1,0 +1,14 @@
+**/bin/
+**/obj/
+.vs/
+*.user
+dist/
+.dotnet-home/
+.env
+.env.*
+*.secret
+*.pfx
+*.pem
+*.key
+data.json
+*.zip
