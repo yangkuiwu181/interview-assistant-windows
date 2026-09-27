@@ -19,13 +19,15 @@ public partial class MainWindow : Window
     private readonly TencentAsr _asr = new();
     private readonly DeepSeekClient _deepSeek = new();
     private readonly DispatcherTimer _settingsTimer = new() { Interval = TimeSpan.FromMilliseconds(600) };
+    private readonly DispatcherTimer _silencePauseTimer = new() { Interval = TimeSpan.FromSeconds(1) };
+    private static readonly TimeSpan SilencePauseDelay = TimeSpan.FromMinutes(3);
     private CancellationTokenSource? _answerToken;
     private InterviewTurn? _activeTurn;
     private byte[]? _pendingScreenImage;
     private bool _startNewQuestionOnNextSentence;
     private bool _listening;
     private bool _closing;
-    private DateTime _lastAudibleAtUtc;
+    private long _lastAudibleTimestamp;
     private int _audibleFrames;
 
     public MainWindow() : this(new Storage()) { }
@@ -58,21 +60,26 @@ public partial class MainWindow : Window
         SecretKeyBox.PasswordChanged += Settings_Changed;
         DeepSeekKeyBox.PasswordChanged += Settings_Changed;
         _settingsTimer.Tick += (_, _) => { _settingsTimer.Stop(); SaveSettings(); };
+        _silencePauseTimer.Tick += SilencePauseTimer_Tick;
         _capture.PcmReady += pcm =>
         {
             _asr.TrySend(pcm);
             var peak = 0;
             for (var i = 0; i + 1 < pcm.Length; i += 2)
                 peak = Math.Max(peak, Math.Abs((int)BitConverter.ToInt16(pcm, i)));
-            if (peak >= 328) Interlocked.Increment(ref _audibleFrames);
+            if (peak >= 328)
+            {
+                Interlocked.Increment(ref _audibleFrames);
+                Interlocked.Exchange(ref _lastAudibleTimestamp, Stopwatch.GetTimestamp());
+            }
             Dispatcher.BeginInvoke(() =>
             {
                 if (!_listening) return;
                 var level = Math.Min(100, peak * 100d / 32768);
                 AudioLevelBar.Value = level;
-                if (level >= 1) _lastAudibleAtUtc = DateTime.UtcNow;
-                AudioHintText.Text = DateTime.UtcNow - _lastAudibleAtUtc > TimeSpan.FromSeconds(4)
-                    ? $"声音检测：当前静音 · 本次有声 {Volatile.Read(ref _audibleFrames) / 5d:F1} 秒"
+                var silence = Stopwatch.GetElapsedTime(Interlocked.Read(ref _lastAudibleTimestamp));
+                AudioHintText.Text = silence > TimeSpan.FromSeconds(4)
+                    ? $"声音检测：静音 {silence.Minutes:00}:{silence.Seconds:00} / 03:00 · 本次有声 {Volatile.Read(ref _audibleFrames) / 5d:F1} 秒"
                     : $"声音检测：收到声音（音量 {level:F0}%）· 本次有声 {Volatile.Read(ref _audibleFrames) / 5d:F1} 秒";
             });
         };
@@ -170,11 +177,12 @@ public partial class MainWindow : Window
         AsrHintText.Text = "腾讯云识别：正在连接…";
         await _asr.StartAsync(AppIdBox.Text.Trim(), SecretIdBox.Text.Trim(), SecretKeyBox.Password);
         Interlocked.Exchange(ref _audibleFrames, 0);
+        Interlocked.Exchange(ref _lastAudibleTimestamp, Stopwatch.GetTimestamp());
         try { _capture.Start(device); }
         catch { await _asr.StopAsync(); throw; }
         _listening = true;
+        _silencePauseTimer.Start();
         AsrHintText.Text = "腾讯云识别：已连接，等待识别文字";
-        _lastAudibleAtUtc = DateTime.UtcNow;
         DeviceCombo.IsEnabled = false;
         RefreshDevicesButton.IsEnabled = false;
         DetectDeviceButton.IsEnabled = false;
@@ -186,9 +194,10 @@ public partial class MainWindow : Window
 
     private async Task StopListeningAsync()
     {
+        _silencePauseTimer.Stop();
+        _listening = false;
         _capture.Stop();
         await _asr.StopAsync();
-        _listening = false;
         AsrHintText.Text = "腾讯云识别：已暂停";
         AudioLevelBar.Value = 0;
         AudioHintText.Text = "声音检测：已暂停";
@@ -199,6 +208,24 @@ public partial class MainWindow : Window
         StartButton.Background = (System.Windows.Media.Brush)FindResource("PrimaryBrush");
         StartButton.BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(43, 169, 165));
         if (!_closing) StatusText.Text = "已暂停";
+    }
+
+    private async void SilencePauseTimer_Tick(object? sender, EventArgs e)
+    {
+        if (!_listening || Stopwatch.GetElapsedTime(Interlocked.Read(ref _lastAudibleTimestamp)) < SilencePauseDelay) return;
+        _silencePauseTimer.Stop();
+        StartButton.IsEnabled = false;
+        try
+        {
+            await StopListeningAsync();
+            AudioHintText.Text = "声音检测：连续 3 分钟静音，已自动暂停";
+            StatusText.Text = "已自动暂停；需要时点击“开始监听”。";
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = "自动暂停失败：" + ex.Message;
+        }
+        finally { StartButton.IsEnabled = true; }
     }
 
     private async Task HandleAsrErrorAsync(string error)
