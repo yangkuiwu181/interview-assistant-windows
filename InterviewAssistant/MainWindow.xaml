@@ -142,10 +142,16 @@
             BorderThickness="1" CornerRadius="13" Padding="18" MinHeight="230">
       <TextBlock x:Name="AnswerText" Text="等面试官说完，点击“生成回答”后显示答案。" FontSize="16" LineHeight="28" TextWrapping="Wrap"/>
     </Border>
-    <Expander Grid.Row="5" Header="我的口述、资料与记录" Margin="0,13,0,0">
+    <Expander x:Name="RecordsExpander" Grid.Row="5" Header="我的口述、资料与记录" Margin="0,13,0,0">
+      <StackPanel>
+      <DockPanel Margin="8,7,8,2">
+        <Button Content="查看最近一场" Style="{StaticResource QuietButtonStyle}" DockPanel.Dock="Right" Click="JumpToLatestSession_Click" Margin="7,0,0,0"/>
+        <TextBlock x:Name="RecordSummaryText" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" VerticalAlignment="Center"/>
+      </DockPanel>
       <TabControl Margin="0,2,0,0">
-        <TabItem Header="我的口述">
+        <TabItem x:Name="SpeechTab" Header="我的口述">
           <StackPanel Margin="9">
+            <TextBlock x:Name="SpeechCountText" Foreground="{StaticResource AccentBrush}" Margin="1,0,0,6"/>
             <TextBlock Text="录到的每句话按面试场次保存在本机，可在这里校正转写。未关联问题的话也会保留。"
                        Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="1,0,0,9"/>
             <TextBlock Text="选择面试场次" Foreground="{StaticResource TextBrush}" Margin="1,0,0,5"/>
@@ -207,8 +213,9 @@
             </Expander>
           </StackPanel>
         </TabItem>
-        <TabItem Header="记录">
+        <TabItem x:Name="HistoryTab" Header="记录">
           <StackPanel Margin="9">
+            <TextBlock x:Name="HistoryCountText" Foreground="{StaticResource AccentBrush}" Margin="1,0,0,6"/>
             <TextBlock x:Name="CurrentSessionText" Foreground="White" TextWrapping="Wrap" Margin="0,0,0,5"/>
             <WrapPanel Margin="0,0,0,6">
               <Button Content="开始新面试" Style="{StaticResource PrimaryButtonStyle}" Click="NewSession_Click"/>
@@ -222,7 +229,7 @@
             <TextBox x:Name="SessionTitleBox" LostFocus="SessionTitleBox_LostFocus"/>
             <TextBlock x:Name="LatencyStatsText" Foreground="White" Margin="0,0,0,5"/>
             <ListBox x:Name="HistoryList" DisplayMemberPath="Question" Height="145" SelectionChanged="HistoryList_SelectionChanged"/>
-            <TextBlock x:Name="HistoryEmptyText" Text="这场面试还没有问答记录" Foreground="#9CA3AF" Margin="2,5,0,5"/>
+            <TextBlock x:Name="HistoryEmptyText" Text="这场面试还没有识别到问题" Foreground="#9CA3AF" Margin="2,5,0,5"/>
             <TextBlock Text="所选问题中我的实际口述" Foreground="White" Margin="2,8,0,4"/>
             <TextBlock x:Name="SelectedSpokenText" Text="尚无录到的口述" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="2,0,0,9"/>
             <Button x:Name="DeleteSessionButton" Content="删除所选场次及其问答" Style="{StaticResource DangerButtonStyle}" Click="DeleteSession_Click" HorizontalAlignment="Left"/>
@@ -275,6 +282,7 @@
           </StackPanel>
         </TabItem>
       </TabControl>
+      </StackPanel>
     </Expander>
   </Grid>
   </ScrollViewer>

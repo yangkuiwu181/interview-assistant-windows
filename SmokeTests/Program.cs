@@ -53,6 +53,34 @@ try
     var store = new Storage(Path.Combine(directory, "store"));
     store.Save(new AppData { DeepSeekReasoningEffort = "high", Documents = [new SourceDocument { Name = "resume.txt", Text = "支付系统" }] });
     Assert(store.Load().Documents.Single().Text == "支付系统" && store.Load().DeepSeekReasoningEffort == "high", "本地资料和思考强度持久化");
+    Exception? recordingError = null;
+    var recordingThread = new Thread(() =>
+    {
+        try
+        {
+            var recordingStore = new Storage(Path.Combine(directory, "recording"));
+            var window = new MainWindow(recordingStore);
+            typeof(MainWindow).GetField("_listening", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                .SetValue(window, true);
+            typeof(MainWindow).GetField("_microphoneRecording", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                .SetValue(window, true);
+            var heard = typeof(MainWindow).GetMethod("OnStableSentence", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+            heard.Invoke(window, ["请介绍一下"]);
+            heard.Invoke(window, ["你最近的项目。"]);
+            var spoken = typeof(MainWindow).GetMethod("OnMyStableSentence", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+            spoken.Invoke(window, ["我最近负责支付系统。"]);
+            var saved = recordingStore.Load();
+            Assert(saved.Sessions.Count == 1 && saved.Turns.Count == 1 &&
+                saved.Turns[0].Question.Contains("你最近的项目") && saved.Turns[0].Completed == false &&
+                saved.Speeches.Count == 1 && saved.Speeches[0].TurnId == saved.Turns[0].Id,
+                "识别到问题和我的口述后无需生成答案也会按场次保存");
+        }
+        catch (Exception ex) { recordingError = ex; }
+    });
+    recordingThread.SetApartmentState(ApartmentState.STA);
+    recordingThread.Start();
+    recordingThread.Join();
+    if (recordingError is not null) throw recordingError;
     var legacyDirectory = Path.Combine(directory, "legacy-data");
     var sharedDirectory = Path.Combine(directory, "shared-data");
     Directory.CreateDirectory(legacyDirectory);

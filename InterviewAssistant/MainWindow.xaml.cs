@@ -26,6 +26,7 @@ public partial class MainWindow : Window
     private static readonly TimeSpan SilencePauseDelay = TimeSpan.FromMinutes(3);
     private CancellationTokenSource? _answerToken;
     private InterviewTurn? _activeTurn;
+    private InterviewTurn? _pendingQuestionTurn;
     private Guid? _speechTargetTurnId;
     private byte[]? _pendingScreenImage;
     private bool _startNewQuestionOnNextSentence;
@@ -33,6 +34,7 @@ public partial class MainWindow : Window
     private bool _microphoneRecording;
     private bool _closing;
     private bool _usageLimitStopping;
+    private bool _refreshingHistory;
     private int _playbackCountedFrames;
     private int _microphoneCountedFrames;
     private int _playbackUsageGeneration;
@@ -525,7 +527,6 @@ public partial class MainWindow : Window
         _data.Speeches.Add(note);
         _storage.Save(_data);
         RefreshSessionViews(session.Id);
-        RefreshSpeechViews(session.Id);
         UpdateSelectedSpokenText();
         MicrophoneHintText.Text = $"已记录我的口述（本场 { _data.Speeches.Count(item => item.SessionId == session.Id) } 句）";
     }
@@ -533,18 +534,29 @@ public partial class MainWindow : Window
     private void OnStableSentence(string sentence)
     {
         if (!_listening || string.IsNullOrWhiteSpace(sentence)) return;
-        _speechTargetTurnId = null;
         InterimText.Text = "";
         if (_startNewQuestionOnNextSentence)
         {
             QuestionBox.Clear();
             ClearPendingScreenshot();
+            _pendingQuestionTurn = null;
             _startNewQuestionOnNextSentence = false;
         }
         QuestionBox.Text = string.IsNullOrWhiteSpace(QuestionBox.Text)
             ? sentence.Trim() : QuestionBox.Text.TrimEnd() + " " + sentence.Trim();
         QuestionBox.CaretIndex = QuestionBox.Text.Length;
         QuestionBox.ScrollToEnd();
+        var session = SessionHistory.EnsureActive(_data, DateTime.UtcNow);
+        if (_pendingQuestionTurn is null || _pendingQuestionTurn.SessionId != session.Id)
+        {
+            _pendingQuestionTurn = new InterviewTurn { SessionId = session.Id, Completed = false };
+            _data.Turns.Insert(0, _pendingQuestionTurn);
+        }
+        _pendingQuestionTurn.Question = QuestionBox.Text.Trim();
+        _activeTurn = _pendingQuestionTurn;
+        _speechTargetTurnId = _pendingQuestionTurn.Id;
+        _storage.Save(_data);
+        RefreshSessionViews(session.Id);
     }
 
     private async Task GenerateAsync(string question, DateTime? questionEndedAtUtc = null, Guid? excludedTurnId = null)
@@ -557,13 +569,18 @@ public partial class MainWindow : Window
         _answerToken = new CancellationTokenSource();
         var token = _answerToken.Token;
         var session = SessionHistory.EnsureActive(_data, DateTime.UtcNow);
+        var pending = ReferenceEquals(_activeTurn, _pendingQuestionTurn) &&
+            _pendingQuestionTurn?.SessionId == session.Id && !_pendingQuestionTurn.Ignored
+            ? _pendingQuestionTurn : null;
         var memory = _data.UseInterviewMemory
-            ? InterviewMemory.Prepare(_data.Turns, session.Id, question, excludedTurnId, _data.Speeches)
+            ? InterviewMemory.Prepare(_data.Turns, session.Id, question, excludedTurnId ?? pending?.Id, _data.Speeches)
             : new InterviewMemoryContext("", question);
-        var turn = new InterviewTurn { Question = question, SessionId = session.Id, Completed = false };
+        var turn = pending ?? new InterviewTurn { SessionId = session.Id, Completed = false };
+        turn.Question = question;
+        if (pending is null) _data.Turns.Insert(0, turn);
+        _pendingQuestionTurn = null;
         _activeTurn = turn;
         _speechTargetTurnId = turn.Id;
-        _data.Turns.Insert(0, turn);
         _storage.Save(_data);
         RefreshSessionViews(session.Id);
         AnswerText.Text = "正在生成…";
@@ -636,7 +653,9 @@ public partial class MainWindow : Window
         _speechTargetTurnId = null;
         _startNewQuestionOnNextSentence = false;
         _answerToken?.Cancel();
-        if (_activeTurn is not null) _activeTurn.Ignored = true;
+        if (_pendingQuestionTurn is not null) _pendingQuestionTurn.Ignored = true;
+        else if (_activeTurn is not null) _activeTurn.Ignored = true;
+        _pendingQuestionTurn = null;
         _storage.Save(_data);
         QuestionBox.Clear();
         ClearPendingScreenshot();
@@ -773,11 +792,12 @@ public partial class MainWindow : Window
 
     private void HistoryList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_refreshingHistory) return;
         if (HistoryList.SelectedItem is not InterviewTurn turn) return;
         _startNewQuestionOnNextSentence = true;
         ClearPendingScreenshot();
         QuestionBox.Text = turn.Question;
-        AnswerText.Text = turn.Answer;
+        AnswerText.Text = string.IsNullOrWhiteSpace(turn.Answer) ? "这道题已记录，尚未生成答案。" : turn.Answer;
         _activeTurn = turn;
         UpdateSelectedSpokenText();
     }
@@ -796,6 +816,7 @@ public partial class MainWindow : Window
         var notes = _data.Speeches.Where(note => note.SessionId == sessionId)
             .OrderBy(note => note.AtUtc).ToList();
         SpeechList.ItemsSource = notes;
+        SpeechCountText.Text = sessionId is null ? "请先选择面试场次" : $"本场已记录 {notes.Count} 句口述";
         SpeechEditor.Clear();
         SaveSpeechButton.IsEnabled = DeleteSpeechButton.IsEnabled = false;
     }
@@ -846,6 +867,17 @@ public partial class MainWindow : Window
         SpeechSessionCombo.ItemsSource = sessions;
         SpeechSessionCombo.SelectedItem = sessions.FirstOrDefault(session => session.Id == selectId)
             ?? sessions.FirstOrDefault();
+        SpeechSessionCombo_SelectionChanged(SpeechSessionCombo, null!);
+    }
+
+    private void JumpToLatestSession_Click(object sender, RoutedEventArgs e)
+    {
+        var latest = _data.Sessions.OrderByDescending(session => session.StartedAtUtc).FirstOrDefault();
+        if (latest is null) return;
+        SessionCombo.SelectedItem = SessionCombo.Items.Cast<InterviewSession>()
+            .FirstOrDefault(session => session.Id == latest.Id);
+        SpeechSessionCombo.SelectedItem = SpeechSessionCombo.Items.Cast<InterviewSession>()
+            .FirstOrDefault(session => session.Id == latest.Id);
     }
 
     private void NewSession_Click(object sender, RoutedEventArgs e)
@@ -853,6 +885,7 @@ public partial class MainWindow : Window
         _answerToken?.Cancel();
         _speechTargetTurnId = null;
         _activeTurn = null;
+        _pendingQuestionTurn = null;
         QuestionBox.Clear();
         ClearPendingScreenshot();
         InterimText.Text = "";
@@ -868,6 +901,7 @@ public partial class MainWindow : Window
     {
         if (_listening) await StopListeningAsync();
         _speechTargetTurnId = null;
+        _pendingQuestionTurn = null;
         SessionHistory.End(_data, DateTime.UtcNow);
         _storage.Save(_data);
         UpdateCurrentSessionText();
@@ -897,7 +931,16 @@ public partial class MainWindow : Window
         SessionTitleBox.IsEnabled = session is not null;
         DeleteSessionButton.IsEnabled = session is not null;
         var turns = session is null ? [] : _data.Turns.Where(turn => turn.SessionId == session.Id).ToList();
-        HistoryList.ItemsSource = turns;
+        var previouslySelected = HistoryList.SelectedItem as InterviewTurn;
+        _refreshingHistory = true;
+        try
+        {
+            HistoryList.ItemsSource = turns;
+            if (previouslySelected is not null && turns.Contains(previouslySelected))
+                HistoryList.SelectedItem = previouslySelected;
+        }
+        finally { _refreshingHistory = false; }
+        HistoryCountText.Text = session is null ? "请先选择面试场次" : $"本场已记录 {turns.Count} 个问题";
         HistoryEmptyText.Visibility = turns.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         UpdateSelectedSpokenText();
         UpdateLatencyStats();
@@ -921,7 +964,13 @@ public partial class MainWindow : Window
         var sessions = _data.Sessions.OrderByDescending(session => session.StartedAtUtc).ToList();
         SessionCombo.ItemsSource = sessions;
         SessionCombo.SelectedItem = sessions.FirstOrDefault(session => session.Id == selectId) ?? sessions.FirstOrDefault();
+        SessionCombo_SelectionChanged(SessionCombo, null!);
         RefreshSpeechViews(selectId);
+        var latest = sessions.FirstOrDefault();
+        var questions = latest is null ? 0 : _data.Turns.Count(turn => turn.SessionId == latest.Id);
+        var speeches = latest is null ? 0 : _data.Speeches.Count(note => note.SessionId == latest.Id);
+        RecordSummaryText.Text = latest is null ? "还没有面试记录" : $"最近一场：{questions} 个问题 · {speeches} 句口述";
+        RecordsExpander.Header = $"我的口述、资料与记录（{questions} 问 · {speeches} 句）";
         UpdateCurrentSessionText();
     }
 
