@@ -21,6 +21,7 @@ public sealed class TencentAsr : IAsyncDisposable
     private TaskCompletionSource<bool> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _sentFrames;
     private int _receivedTexts;
+    public int SentFrames => Volatile.Read(ref _sentFrames);
     public event Action<string>? StableSentence;
     public event Action<string>? InterimSentence;
     public event Action<string>? Error;

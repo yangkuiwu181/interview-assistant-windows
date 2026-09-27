@@ -13,6 +13,7 @@ namespace InterviewAssistant;
 
 public partial class MainWindow : Window
 {
+    private sealed record SpeechTurnOption(Guid? TurnId, string Label);
     private readonly Storage _storage;
     private readonly AppData _data;
     private readonly AudioCapture _capture = new();
@@ -31,6 +32,15 @@ public partial class MainWindow : Window
     private bool _listening;
     private bool _microphoneRecording;
     private bool _closing;
+    private bool _usageLimitStopping;
+    private int _playbackCountedFrames;
+    private int _microphoneCountedFrames;
+    private int _playbackUsageGeneration;
+    private int _microphoneUsageGeneration;
+    private DateTime _usageSavedAtUtc = DateTime.MinValue;
+    private Guid? _usageWarnedSessionId;
+    private CancellationTokenSource? _diagnosticToken;
+    private Task? _diagnosticTask;
     private long _lastAudibleTimestamp;
     private int _audibleFrames;
 
@@ -61,6 +71,10 @@ public partial class MainWindow : Window
         RecordMyVoiceCheck.IsChecked = _data.RecordMyVoice;
         RecordMyVoiceCheck.Checked += RecordMyVoiceCheck_Changed;
         RecordMyVoiceCheck.Unchecked += RecordMyVoiceCheck_Changed;
+        AsrLimitCombo.SelectedItem = AsrLimitCombo.Items.Cast<ComboBoxItem>()
+            .FirstOrDefault(item => (string?)item.Tag == _data.AsrLimitMinutes.ToString())
+            ?? AsrLimitCombo.Items[2];
+        AsrLimitCombo.SelectionChanged += AsrLimitCombo_SelectionChanged;
         RefreshAnswerRules();
         RefreshDocumentGroups();
         RefreshSessionViews(_data.ActiveSessionId);
@@ -96,10 +110,16 @@ public partial class MainWindow : Window
         };
         _asr.StableSentence += sentence => Dispatcher.BeginInvoke(() => OnStableSentence(sentence));
         _asr.InterimSentence += sentence => Dispatcher.BeginInvoke(() => InterimText.Text = sentence);
-        _asr.Progress += (sent, received) => Dispatcher.BeginInvoke(() =>
+        _asr.Progress += (sent, received) =>
         {
-            if (_listening) AsrHintText.Text = $"腾讯云识别：已发送 {sent / 5d:F0} 秒（有声 {Volatile.Read(ref _audibleFrames) / 5d:F1} 秒）· 收到 {received} 条文字结果";
-        });
+            var generation = Volatile.Read(ref _playbackUsageGeneration);
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (generation != _playbackUsageGeneration) return;
+                RecordAsrUsage(microphone: false, sent);
+                if (_listening) AsrHintText.Text = $"腾讯云识别：已发送 {sent / 5d:F0} 秒（有声 {Volatile.Read(ref _audibleFrames) / 5d:F1} 秒）· 收到 {received} 条文字结果";
+            });
+        };
         _asr.Error += error => Dispatcher.BeginInvoke(() => _ = HandleAsrErrorAsync(error));
         _microphoneCapture.PcmReady += pcm =>
         {
@@ -114,6 +134,14 @@ public partial class MainWindow : Window
             });
         };
         _microphoneAsr.StableSentence += sentence => Dispatcher.BeginInvoke(() => OnMyStableSentence(sentence));
+        _microphoneAsr.Progress += (sent, _) =>
+        {
+            var generation = Volatile.Read(ref _microphoneUsageGeneration);
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (generation == _microphoneUsageGeneration) RecordAsrUsage(microphone: true, sent);
+            });
+        };
         _microphoneAsr.InterimSentence += sentence => Dispatcher.BeginInvoke(() =>
         {
             if (_microphoneRecording) MicrophoneHintText.Text = "我的回答识别中：" + sentence;
@@ -143,6 +171,72 @@ public partial class MainWindow : Window
         if (MicrophoneCombo.SelectedItem is not MMDevice device) return;
         _data.SelectedMicrophoneId = device.ID;
         _storage.Save(_data);
+    }
+
+    private void AsrLimitCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!int.TryParse(AsrLimitCombo.SelectedValue?.ToString(), out var minutes)) return;
+        _data.AsrLimitMinutes = minutes;
+        _storage.Save(_data);
+        _usageWarnedSessionId = null;
+        UpdateUsageText();
+        var session = _data.Sessions.FirstOrDefault(item => item.Id == _data.ActiveSessionId);
+        if (_listening && session is not null && AsrUsage.LimitReached(session, minutes) && !_usageLimitStopping)
+            _ = StopForUsageLimitAsync();
+    }
+
+    private void RecordAsrUsage(bool microphone, int sentFrames)
+    {
+        var added = microphone
+            ? AsrUsage.NewFrames(sentFrames, ref _microphoneCountedFrames)
+            : AsrUsage.NewFrames(sentFrames, ref _playbackCountedFrames);
+        if (added == 0) return;
+        var session = _data.Sessions.FirstOrDefault(item => item.Id == _data.ActiveSessionId);
+        if (session is null) return;
+        if (microphone) session.MicrophoneAsrFrames += added;
+        else session.PlaybackAsrFrames += added;
+        UpdateUsageText();
+        if (DateTime.UtcNow - _usageSavedAtUtc >= TimeSpan.FromSeconds(5))
+        {
+            _storage.Save(_data);
+            _usageSavedAtUtc = DateTime.UtcNow;
+        }
+        if (AsrUsage.NearLimit(session, _data.AsrLimitMinutes) && _usageWarnedSessionId != session.Id)
+        {
+            _usageWarnedSessionId = session.Id;
+            StatusText.Text = "本场识别时长已达到上限的 80%。";
+        }
+        if (_listening && AsrUsage.LimitReached(session, _data.AsrLimitMinutes) && !_usageLimitStopping)
+            _ = StopForUsageLimitAsync();
+    }
+
+    private void UpdateUsageText()
+    {
+        var session = _data.Sessions.FirstOrDefault(item => item.Id == _data.ActiveSessionId)
+            ?? SessionCombo.SelectedItem as InterviewSession;
+        var playback = session?.PlaybackAsrFrames ?? 0;
+        var microphone = session?.MicrophoneAsrFrames ?? 0;
+        var limit = _data.AsrLimitMinutes == 0 ? "不限" : _data.AsrLimitMinutes + " 分钟";
+        var near = session is not null && AsrUsage.NearLimit(session, _data.AsrLimitMinutes);
+        UsageText.Text = $"本场已发送：面试官 {AsrUsage.FormatFrames(playback)} + 麦克风 {AsrUsage.FormatFrames(microphone)} = {AsrUsage.FormatFrames(playback + microphone)}；上限 {limit}" +
+            (near ? " · 接近或达到上限" : "") +
+            $"\n识别测试累计：{AsrUsage.FormatFrames(_data.DiagnosticPlaybackFrames + _data.DiagnosticMicrophoneFrames)}（单独统计）";
+        UsageText.Foreground = near
+            ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 185, 92))
+            : (System.Windows.Media.Brush)FindResource("TextBrush");
+    }
+
+    private async Task StopForUsageLimitAsync()
+    {
+        _usageLimitStopping = true;
+        StartButton.IsEnabled = false;
+        try
+        {
+            await StopListeningAsync();
+            StatusText.Text = "本场语音识别已达到累计上限，已自动暂停。可调高上限或开始新面试。";
+        }
+        catch (Exception ex) { StatusText.Text = "暂停识别失败：" + ex.Message; }
+        finally { StartButton.IsEnabled = true; _usageLimitStopping = false; }
     }
 
     private async void RecordMyVoiceCheck_Changed(object sender, RoutedEventArgs e)
@@ -228,13 +322,88 @@ public partial class MainWindow : Window
         finally { StartButton.IsEnabled = true; }
     }
 
+    private async void RecognitionTest_Click(object sender, RoutedEventArgs e)
+    {
+        if (_diagnosticToken is not null)
+        {
+            _diagnosticToken.Cancel();
+            RecognitionTestButton.Content = "正在结束测试…";
+            RecognitionTestButton.IsEnabled = false;
+            return;
+        }
+        if (_listening) { StatusText.Text = "请先暂停监听，再运行双路识别测试。"; return; }
+        if (string.IsNullOrWhiteSpace(AppIdBox.Text) || string.IsNullOrWhiteSpace(SecretIdBox.Text) ||
+            string.IsNullOrWhiteSpace(SecretKeyBox.Password))
+        {
+            StatusText.Text = "请先在 API 设置中填写腾讯云识别凭据。";
+            return;
+        }
+        SaveSettings();
+        var run = new CancellationTokenSource();
+        _diagnosticToken = run;
+        StartButton.IsEnabled = DetectDeviceButton.IsEnabled = false;
+        DeviceCombo.IsEnabled = MicrophoneCombo.IsEnabled = false;
+        RefreshDevicesButton.IsEnabled = RefreshMicrophonesButton.IsEnabled = false;
+        RecognitionTestButton.Content = "结束测试";
+        PlaybackTestText.Text = "播放设备测试：正在连接…";
+        MicrophoneTestText.Text = "麦克风测试：正在连接…";
+        StatusText.Text = "双路识别测试中；请让对方和自己分别说话。";
+        try
+        {
+            void ShowPlayback(string message) => Dispatcher.BeginInvoke(() =>
+            {
+                if (ReferenceEquals(_diagnosticToken, run)) PlaybackTestText.Text = message;
+            });
+            void ShowMicrophone(string message) => Dispatcher.BeginInvoke(() =>
+            {
+                if (ReferenceEquals(_diagnosticToken, run)) MicrophoneTestText.Text = message;
+            });
+            var playback = RecognitionDiagnostic.RunChannelAsync(DeviceCombo.SelectedItem as MMDevice, false,
+                AppIdBox.Text.Trim(), SecretIdBox.Text.Trim(), SecretKeyBox.Password, ShowPlayback, run.Token);
+            var microphone = RecognitionDiagnostic.RunChannelAsync(MicrophoneCombo.SelectedItem as MMDevice, true,
+                AppIdBox.Text.Trim(), SecretIdBox.Text.Trim(), SecretKeyBox.Password, ShowMicrophone, run.Token);
+            var combined = Task.WhenAll(playback, microphone);
+            _diagnosticTask = combined;
+            var results = await combined;
+            _data.DiagnosticPlaybackFrames += results[0].SentFrames;
+            _data.DiagnosticMicrophoneFrames += results[1].SentFrames;
+            _storage.Save(_data);
+            UpdateUsageText();
+            PlaybackTestText.Text = results[0].Summary("播放设备测试");
+            MicrophoneTestText.Text = results[1].Summary("麦克风测试");
+            StatusText.Text = "测试结束；请查看两路音量、文字与连接状态。";
+        }
+        catch (Exception ex) { StatusText.Text = "识别测试失败：" + ex.Message; }
+        finally
+        {
+            _diagnosticTask = null;
+            _diagnosticToken = null;
+            run.Dispose();
+            RecognitionTestButton.Content = "测试两路识别 15 秒（会产生用量）";
+            RecognitionTestButton.IsEnabled = true;
+            StartButton.IsEnabled = DetectDeviceButton.IsEnabled = true;
+            DeviceCombo.IsEnabled = MicrophoneCombo.IsEnabled = true;
+            RefreshDevicesButton.IsEnabled = RefreshMicrophonesButton.IsEnabled = true;
+        }
+    }
+
     private async Task StartListeningAsync()
     {
+        if (_diagnosticToken is not null) throw new InvalidOperationException("请等待识别测试结束。");
         if (DeviceCombo.SelectedItem is not MMDevice device) throw new InvalidOperationException("没有可用的播放设备。");
+        var active = _data.Sessions.FirstOrDefault(session => session.Id == _data.ActiveSessionId);
+        if (active is not null && AsrUsage.LimitReached(active, _data.AsrLimitMinutes))
+            throw new InvalidOperationException("本场识别时长已到上限；请调高上限或开始新面试。");
         SaveSettings();
         StatusText.Text = "正在连接语音识别…";
         AsrHintText.Text = "腾讯云识别：正在连接…";
+        Interlocked.Increment(ref _playbackUsageGeneration);
         await _asr.StartAsync(AppIdBox.Text.Trim(), SecretIdBox.Text.Trim(), SecretKeyBox.Password);
+        _usageLimitStopping = false;
+        _playbackCountedFrames = 0;
+        var session = SessionHistory.EnsureActive(_data, DateTime.UtcNow);
+        _storage.Save(_data);
+        RefreshSessionViews(session.Id);
         Interlocked.Exchange(ref _audibleFrames, 0);
         Interlocked.Exchange(ref _lastAudibleTimestamp, Stopwatch.GetTimestamp());
         try { _capture.Start(device); }
@@ -261,8 +430,11 @@ public partial class MainWindow : Window
         _silencePauseTimer.Stop();
         _listening = false;
         _capture.Stop();
+        RecordAsrUsage(microphone: false, _asr.SentFrames);
         await _asr.StopAsync();
+        RecordAsrUsage(microphone: false, _asr.SentFrames);
         await StopMicrophoneAsync();
+        _storage.Save(_data);
         AsrHintText.Text = "腾讯云识别：已暂停";
         AudioLevelBar.Value = 0;
         AudioHintText.Text = "声音检测：已暂停";
@@ -302,10 +474,15 @@ public partial class MainWindow : Window
     private async Task StartMicrophoneAsync()
     {
         if (_microphoneRecording) return;
+        var active = _data.Sessions.FirstOrDefault(session => session.Id == _data.ActiveSessionId);
+        if (active is not null && AsrUsage.LimitReached(active, _data.AsrLimitMinutes))
+            throw new InvalidOperationException("本场识别时长已到上限；请调高上限或开始新面试。");
         if (MicrophoneCombo.SelectedItem is not MMDevice device)
             throw new InvalidOperationException("没有可用的麦克风，请检查设备与权限。");
         MicrophoneHintText.Text = "正在连接麦克风识别…";
+        Interlocked.Increment(ref _microphoneUsageGeneration);
         await _microphoneAsr.StartAsync(AppIdBox.Text.Trim(), SecretIdBox.Text.Trim(), SecretKeyBox.Password);
+        _microphoneCountedFrames = 0;
         try { _microphoneCapture.Start(device); }
         catch { await _microphoneAsr.StopAsync(); throw; }
         _microphoneRecording = true;
@@ -318,7 +495,9 @@ public partial class MainWindow : Window
     {
         _microphoneRecording = false;
         _microphoneCapture.Stop();
+        RecordAsrUsage(microphone: true, _microphoneAsr.SentFrames);
         await _microphoneAsr.StopAsync();
+        RecordAsrUsage(microphone: true, _microphoneAsr.SentFrames);
         MicrophoneLevelBar.Value = 0;
         MicrophoneCombo.IsEnabled = true;
         RefreshMicrophonesButton.IsEnabled = true;
@@ -620,6 +799,15 @@ public partial class MainWindow : Window
     {
         var note = SpeechList.SelectedItem as InterviewSpeech;
         SpeechEditor.Text = note?.Text ?? "";
+        var options = new List<SpeechTurnOption> { new(null, "未关联具体问题") };
+        if (note is not null)
+            options.AddRange(_data.Turns.Where(turn => turn.SessionId == note.SessionId && !turn.Ignored)
+                .OrderBy(turn => turn.AtUtc)
+                .Select(turn => new SpeechTurnOption(turn.Id,
+                    $"{turn.AtUtc.ToLocalTime():HH:mm:ss} · {(turn.Question.Length <= 95 ? turn.Question : turn.Question[..94] + "…")}")));
+        SpeechTurnCombo.ItemsSource = options;
+        SpeechTurnCombo.SelectedItem = options.FirstOrDefault(option => option.TurnId == note?.TurnId) ?? options[0];
+        SpeechTurnCombo.IsEnabled = note is not null;
         SaveSpeechButton.IsEnabled = DeleteSpeechButton.IsEnabled = note is not null;
     }
 
@@ -629,10 +817,12 @@ public partial class MainWindow : Window
         var text = SpeechEditor.Text.Trim();
         if (text.Length == 0) { StatusText.Text = "转写不能为空；可用“删除这句”移除。"; return; }
         note.Text = text;
+        note.TurnId = (SpeechTurnCombo.SelectedItem as SpeechTurnOption)?.TurnId;
         _storage.Save(_data);
         RefreshSpeechViews(note.SessionId);
+        SpeechList.SelectedItem = note;
         UpdateSelectedSpokenText();
-        StatusText.Text = "已修正口述文字，下次生成回答时生效。";
+        StatusText.Text = "已保存口述文字与问题关联，下次生成回答时生效。";
     }
 
     private void DeleteSpeech_Click(object sender, RoutedEventArgs e)
@@ -706,6 +896,7 @@ public partial class MainWindow : Window
         HistoryEmptyText.Visibility = turns.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         UpdateSelectedSpokenText();
         UpdateLatencyStats();
+        UpdateUsageText();
     }
 
     private void SessionTitleBox_LostFocus(object sender, RoutedEventArgs e)
@@ -851,6 +1042,8 @@ public partial class MainWindow : Window
         e.Cancel = true;
         _closing = true;
         _settingsTimer.Stop();
+        _diagnosticToken?.Cancel();
+        if (_diagnosticTask is not null) try { await _diagnosticTask; } catch { }
         SaveSettings();
         _answerToken?.Cancel();
         await StopListeningAsync();

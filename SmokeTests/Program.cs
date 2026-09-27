@@ -127,6 +127,21 @@ try
         spokenMemory.Conversation.Contains("未关联问题的口述"), "实际口述优先、同场隔离及近期未关联口述");
     Assert(InterviewMemory.Prepare([], memorySession, "追问", speeches: spokenNotes).Conversation.Contains("未关联问题的口述"),
         "没有生成上一题稿子时仍可参考近期口述");
+    spokenNotes[0].TurnId = memoryTurns[5].Id;
+    spokenNotes[1].TurnId = memoryTurns[5].Id;
+    var correctedLink = InterviewMemory.Prepare(memoryTurns, memorySession, "继续追问", speeches: spokenNotes);
+    Assert(correctedLink.Conversation.Contains("候选人实际口述（语音转写）：我实际说了支付接口耗时下降三成 先检查慢查询") &&
+        correctedLink.Conversation.Contains("助手之前的回答（未必实际说出）：回答7"), "修改口述关联后连续记忆使用新归属");
+    var usageSession = new InterviewSession { PlaybackAsrFrames = 5 * 42 * 60, MicrophoneAsrFrames = 5 * 55 * 60 };
+    var counted = 0;
+    Assert(AsrUsage.NewFrames(15, ref counted) == 15 && AsrUsage.NewFrames(20, ref counted) == 5 &&
+        AsrUsage.NewFrames(3, ref counted) == 0, "迟到的进度回调不重复计量");
+    counted = 0;
+    Assert(AsrUsage.NewFrames(3, ref counted) == 3, "新连接从零累计");
+    Assert(AsrUsage.NearLimit(usageSession, 120) && !AsrUsage.LimitReached(usageSession, 120) &&
+        AsrUsage.LimitReached(usageSession, 60) && !AsrUsage.LimitReached(usageSession, 0), "双路累计提醒和上限");
+    Assert((await RecognitionDiagnostic.RunChannelAsync(null, false, "", "", "", _ => { }, CancellationToken.None)).Error.Contains("未找到设备"),
+        "识别测试对无设备给出可恢复提示");
     store.Save(new AppData { Speeches = spokenNotes, RecordMyVoice = true });
     Assert(store.Load().Speeches.Count == 4 && store.Load().RecordMyVoice, "口述记录和开关持久化");
     Assert(!JsonSerializer.Deserialize<AppData>("{}")!.RecordMyVoice, "麦克风录制默认关闭");

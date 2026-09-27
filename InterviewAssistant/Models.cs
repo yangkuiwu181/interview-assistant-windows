@@ -60,6 +60,8 @@ public sealed class InterviewSession
     public string Title { get; set; } = "";
     public DateTime StartedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? EndedAtUtc { get; set; }
+    public int PlaybackAsrFrames { get; set; }
+    public int MicrophoneAsrFrames { get; set; }
 }
 
 public sealed class AppData
@@ -76,6 +78,9 @@ public sealed class AppData
     public bool UseInterviewMemory { get; set; } = true;
     public bool RecordMyVoice { get; set; }
     public string? SelectedMicrophoneId { get; set; }
+    public int AsrLimitMinutes { get; set; } = 120;
+    public int DiagnosticPlaybackFrames { get; set; }
+    public int DiagnosticMicrophoneFrames { get; set; }
     public List<AnswerRule>? AnswerRules { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? AiAnswerInstructions { get; set; }
