@@ -218,6 +218,11 @@ public partial class MainWindow : Window
         var microphone = session?.MicrophoneAsrFrames ?? 0;
         var limit = _data.AsrLimitMinutes == 0 ? "不限" : _data.AsrLimitMinutes + " 分钟";
         var near = session is not null && AsrUsage.NearLimit(session, _data.AsrLimitMinutes);
+        UsageSummaryText.Text = $"本场已发送 {AsrUsage.FormatFrames(playback + microphone)} / {limit}" +
+            (near ? " · 接近上限" : "");
+        UsageSummaryText.Foreground = near
+            ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 185, 92))
+            : (System.Windows.Media.Brush)FindResource("AccentBrush");
         UsageText.Text = $"本场已发送：面试官 {AsrUsage.FormatFrames(playback)} + 麦克风 {AsrUsage.FormatFrames(microphone)} = {AsrUsage.FormatFrames(playback + microphone)}；上限 {limit}" +
             (near ? " · 接近或达到上限" : "") +
             $"\n识别测试累计：{AsrUsage.FormatFrames(_data.DiagnosticPlaybackFrames + _data.DiagnosticMicrophoneFrames)}（单独统计）";
@@ -379,7 +384,7 @@ public partial class MainWindow : Window
             _diagnosticTask = null;
             _diagnosticToken = null;
             run.Dispose();
-            RecognitionTestButton.Content = "测试两路识别 15 秒（会产生用量）";
+            RecognitionTestButton.Content = "测试两路识别 15 秒";
             RecognitionTestButton.IsEnabled = true;
             StartButton.IsEnabled = DetectDeviceButton.IsEnabled = true;
             DeviceCombo.IsEnabled = MicrophoneCombo.IsEnabled = true;

@@ -4,6 +4,7 @@
   <Window.Resources>
     <ResourceDictionary>
       <ResourceDictionary.MergedDictionaries><ResourceDictionary Source="Theme.xaml"/></ResourceDictionary.MergedDictionaries>
+      <BooleanToVisibilityConverter x:Key="CheckedToVisibility"/>
     </ResourceDictionary>
   </Window.Resources>
   <ScrollViewer x:Name="PageScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" PreviewMouseWheel="PageScrollViewer_PreviewMouseWheel">
@@ -29,53 +30,71 @@
     <Border Grid.Row="1" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}"
             BorderThickness="1" CornerRadius="13" Padding="15" Margin="0,0,0,13">
       <StackPanel>
-        <TextBlock Text="01  声音输入" Foreground="{StaticResource AccentBrush}" FontSize="11" FontWeight="SemiBold" Margin="1,0,0,7"/>
-        <TextBlock Text="会议播放设备" FontSize="15" FontWeight="SemiBold" Margin="1,0,0,8"/>
+        <TextBlock Text="01  声音输入" Foreground="{StaticResource AccentBrush}" FontSize="11" FontWeight="SemiBold" Margin="1,0,0,8"/>
+        <TextBlock Text="面试官声音 · 会议播放设备" FontSize="15" FontWeight="SemiBold" Margin="1,0,0,8"/>
         <DockPanel>
           <Button x:Name="RefreshDevicesButton" Content="刷新" Style="{StaticResource QuietButtonStyle}" DockPanel.Dock="Right" Click="RefreshDevices_Click" Margin="8,0,0,0"/>
           <ComboBox x:Name="DeviceCombo" MinHeight="30" SelectionChanged="DeviceCombo_SelectionChanged">
             <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding FriendlyName}" Foreground="{StaticResource TextBrush}"/></DataTemplate></ComboBox.ItemTemplate>
           </ComboBox>
         </DockPanel>
-        <Button x:Name="DetectDeviceButton" Content="检测正在播放声音的设备（请让对方说话）" Style="{StaticResource QuietButtonStyle}"
+        <Button x:Name="DetectDeviceButton" Content="自动查找播放设备" Style="{StaticResource QuietButtonStyle}"
+                ToolTip="让对方通过会议持续说话，再点击查找。此操作不调用云端识别。"
                 Click="DetectDevice_Click" HorizontalAlignment="Left" Margin="0,8,0,3"/>
-        <TextBlock x:Name="DeviceHintText" Text="检测设备不调用语音识别接口，不产生识别费用。" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="2,1,0,7" FontSize="11"/>
-        <ProgressBar x:Name="AudioLevelBar" Minimum="0" Maximum="100" Height="6" Value="0" Margin="2,3,2,8"/>
-        <TextBlock x:Name="AudioHintText" Text="声音检测：待机" Foreground="{StaticResource MutedBrush}" Margin="2,0,0,3" FontSize="11"/>
-        <TextBlock x:Name="AsrHintText" Text="腾讯云识别：待机" Foreground="{StaticResource MutedBrush}" Margin="2,0,0,3" TextWrapping="Wrap" FontSize="11"/>
-        <CheckBox x:Name="RecordMyVoiceCheck" Content="同时记录我的回答（麦克风）" Margin="2,9,0,4"/>
-        <DockPanel>
-          <Button x:Name="RefreshMicrophonesButton" Content="刷新" Style="{StaticResource QuietButtonStyle}" DockPanel.Dock="Right" Click="RefreshMicrophones_Click" Margin="8,0,0,0"/>
-          <ComboBox x:Name="MicrophoneCombo" MinHeight="30" SelectionChanged="MicrophoneCombo_SelectionChanged">
-            <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding FriendlyName}" Foreground="{StaticResource TextBrush}"/></DataTemplate></ComboBox.ItemTemplate>
-          </ComboBox>
-        </DockPanel>
-        <ProgressBar x:Name="MicrophoneLevelBar" Minimum="0" Maximum="100" Height="5" Value="0" Margin="2,7,2,3"/>
-        <TextBlock x:Name="MicrophoneHintText" Text="默认关闭；开启会增加一路腾讯云识别用量。建议戴耳机，避免麦克风重复收到面试官声音。"
-                   Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="2,5,0,3" FontSize="11"/>
-        <TextBlock Text="播放设备（录制麦克风时也包括麦克风）连续 3 分钟静音会自动暂停。" Foreground="{StaticResource MutedBrush}" Margin="2,3,0,0" FontSize="11" TextWrapping="Wrap"/>
-        <TextBlock x:Name="UsageText" Text="识别用量：待机" Foreground="{StaticResource TextBrush}" TextWrapping="Wrap" Margin="2,8,0,3" FontSize="12"/>
-        <StackPanel Orientation="Horizontal" Margin="2,3,0,0">
-          <TextBlock Text="本场累计上限" VerticalAlignment="Center" Margin="0,0,8,0"/>
-          <ComboBox x:Name="AsrLimitCombo" Width="130" MinHeight="29" SelectedValuePath="Tag">
-            <ComboBoxItem Content="30 分钟" Tag="30"/>
-            <ComboBoxItem Content="60 分钟" Tag="60"/>
-            <ComboBoxItem Content="120 分钟" Tag="120"/>
-            <ComboBoxItem Content="不限制" Tag="0"/>
-          </ComboBox>
-        </StackPanel>
-        <TextBlock Text="面试时两路已发送时长相加；达到上限会暂停。测试用量单独统计。这里是本机估算，不是腾讯云账单。"
-                   Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="2,4,0,4" FontSize="11"/>
-        <Button x:Name="RecognitionTestButton" Content="测试两路识别 15 秒（会产生用量）" Style="{StaticResource QuietButtonStyle}"
-                Click="RecognitionTest_Click" HorizontalAlignment="Left" Margin="0,3,0,4"/>
-        <TextBlock Text="测试时请让对方通过会议说话，同时自己对麦克风说话；结果不会写入面试记录。"
-                   Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="2,0,0,4" FontSize="11"/>
-        <TextBlock x:Name="PlaybackTestText" Text="播放设备测试：待机" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="2,2,0,2" FontSize="11"/>
-        <TextBlock x:Name="MicrophoneTestText" Text="麦克风测试：待机" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="2,2,0,2" FontSize="11"/>
-        <DockPanel Margin="0,10,0,0">
+        <TextBlock x:Name="DeviceHintText" Text="让对方说话时查找设备；此操作不产生识别用量。"
+                   Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="2,1,0,8" FontSize="11"/>
+        <ProgressBar x:Name="AudioLevelBar" Minimum="0" Maximum="100" Height="6" Value="0" Margin="2,1,2,8"/>
+        <TextBlock x:Name="AudioHintText" Text="声音检测：待机" Foreground="{StaticResource MutedBrush}" Margin="2,0,0,3" TextWrapping="Wrap" FontSize="11"/>
+        <TextBlock x:Name="AsrHintText" Text="腾讯云识别：待机" Foreground="{StaticResource MutedBrush}" Margin="2,0,0,7" TextWrapping="Wrap" FontSize="11"/>
+        <DockPanel Margin="0,5,0,0">
           <Button x:Name="StartButton" Content="开始监听" Style="{StaticResource PrimaryButtonStyle}" Click="StartButton_Click" DockPanel.Dock="Left"/>
           <TextBlock x:Name="StatusText" Text="待机" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="7,0,0,0" TextWrapping="Wrap" FontSize="11"/>
         </DockPanel>
+        <TextBlock Text="两路声音都静音 3 分钟后自动暂停。" Foreground="{StaticResource MutedBrush}" Margin="2,7,0,0" FontSize="11"/>
+
+        <Border Background="{StaticResource InsetBrush}" BorderBrush="{StaticResource LineBrush}"
+                BorderThickness="1" CornerRadius="9" Padding="11,10" Margin="0,13,0,0">
+          <StackPanel>
+            <CheckBox x:Name="RecordMyVoiceCheck" Content="同时记录我的回答" Foreground="{StaticResource TextBrush}"/>
+            <TextBlock Text="开启后使用麦克风，会增加一路识别用量。" Foreground="{StaticResource MutedBrush}" Margin="24,4,0,0" FontSize="11" TextWrapping="Wrap"/>
+            <StackPanel Visibility="{Binding IsChecked, ElementName=RecordMyVoiceCheck, Converter={StaticResource CheckedToVisibility}}" Margin="0,11,0,0">
+              <DockPanel>
+                <Button x:Name="RefreshMicrophonesButton" Content="刷新" Style="{StaticResource QuietButtonStyle}" DockPanel.Dock="Right" Click="RefreshMicrophones_Click" Margin="8,0,0,0"/>
+                <ComboBox x:Name="MicrophoneCombo" MinHeight="30" SelectionChanged="MicrophoneCombo_SelectionChanged">
+                  <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding FriendlyName}" Foreground="{StaticResource TextBrush}"/></DataTemplate></ComboBox.ItemTemplate>
+                </ComboBox>
+              </DockPanel>
+              <ProgressBar x:Name="MicrophoneLevelBar" Minimum="0" Maximum="100" Height="5" Value="0" Margin="2,8,2,5"/>
+              <TextBlock x:Name="MicrophoneHintText" Text="开始监听后会显示麦克风识别状态。建议戴耳机。"
+                         Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="2,0,0,0" FontSize="11"/>
+            </StackPanel>
+          </StackPanel>
+        </Border>
+
+        <TextBlock x:Name="UsageSummaryText" Text="本场识别用量：待机" Foreground="{StaticResource AccentBrush}"
+                   TextWrapping="Wrap" Margin="2,11,0,4" FontSize="12" FontWeight="SemiBold"/>
+        <Expander x:Name="DiagnosticsSection" Header="用量明细与识别测试" IsExpanded="False" Margin="0,5,0,0">
+          <StackPanel Margin="5,0,4,3">
+            <TextBlock x:Name="UsageText" Text="识别用量：待机" Foreground="{StaticResource TextBrush}" TextWrapping="Wrap" Margin="2,0,0,8" FontSize="11"/>
+            <StackPanel Orientation="Horizontal" Margin="2,0,0,0">
+              <TextBlock Text="本场累计上限" VerticalAlignment="Center" Margin="0,0,8,0"/>
+              <ComboBox x:Name="AsrLimitCombo" Width="130" MinHeight="29" SelectedValuePath="Tag">
+                <ComboBoxItem Content="30 分钟" Tag="30"/>
+                <ComboBoxItem Content="60 分钟" Tag="60"/>
+                <ComboBoxItem Content="120 分钟" Tag="120"/>
+                <ComboBoxItem Content="不限制" Tag="0"/>
+              </ComboBox>
+            </StackPanel>
+            <TextBlock Text="两路已发送时长相加，到上限会暂停；测试单独统计。本机估算不等于云端账单。"
+                       Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="2,6,0,10" FontSize="11"/>
+            <Button x:Name="RecognitionTestButton" Content="测试两路识别 15 秒" Style="{StaticResource QuietButtonStyle}"
+                    Click="RecognitionTest_Click" HorizontalAlignment="Left" Margin="0,0,0,5"/>
+            <TextBlock Text="测试会产生识别用量。请让对方通过会议说话，同时自己对麦克风说话。"
+                       Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="2,0,0,5" FontSize="11"/>
+            <TextBlock x:Name="PlaybackTestText" Text="播放设备测试：待机" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="2,2,0,2" FontSize="11"/>
+            <TextBlock x:Name="MicrophoneTestText" Text="麦克风测试：待机" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="2,2,0,2" FontSize="11"/>
+          </StackPanel>
+        </Expander>
       </StackPanel>
     </Border>
     <Border Grid.Row="2" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}"
