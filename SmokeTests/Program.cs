@@ -95,6 +95,35 @@ try
     store.Save(interviewData);
     var restored = store.Load();
     Assert(restored.Sessions.Count == 3 && restored.ActiveSessionId is null && restored.Turns.Single(turn => turn.Question == "旧问题").SessionId == legacyId, "面试场次持久化");
+    var memorySession = Guid.NewGuid();
+    var anotherSession = Guid.NewGuid();
+    var memoryTurns = Enumerable.Range(1, 7).Select(index => new InterviewTurn
+    {
+        SessionId = memorySession, AtUtc = DateTime.UtcNow.AddMinutes(index),
+        Question = $"问题{index}", Answer = $"回答{index}", Completed = index == 5 ? null : true
+    }).ToList();
+    memoryTurns.Add(new InterviewTurn { SessionId = anotherSession, Question = "别场问题", Answer = "别场回答", Completed = true });
+    memoryTurns.Add(new InterviewTurn { SessionId = memorySession, AtUtc = DateTime.UtcNow.AddMinutes(10), Question = "忽略问题", Answer = "忽略回答", Ignored = true });
+    memoryTurns.Add(new InterviewTurn { SessionId = memorySession, AtUtc = DateTime.UtcNow.AddMinutes(11), Question = "中断问题", Answer = "不完整回答", Completed = false });
+    var memory = InterviewMemory.Prepare(memoryTurns, memorySession, "这个指标怎么算？");
+    Assert(memory.Conversation.Contains("回答3") && memory.Conversation.Contains("回答7") &&
+        memory.Conversation.Contains("问题1") && !memory.Conversation.Contains("回答1") &&
+        !memory.Conversation.Contains("回答2") && !memory.Conversation.Contains("别场回答") &&
+        !memory.Conversation.Contains("忽略回答") && !memory.Conversation.Contains("不完整回答") &&
+        memory.SearchQuery.Contains("问题7"), "同场最近五轮、早期话题和资料检索补充");
+    Assert(InterviewMemory.Prepare(memoryTurns, anotherSession, "新问题").Conversation.Contains("别场回答") &&
+        !InterviewMemory.Prepare(memoryTurns, Guid.NewGuid(), "新问题").Conversation.Contains("回答7"), "不同面试场次隔离");
+    Assert(!InterviewMemory.Prepare(memoryTurns, memorySession, "问题7", memoryTurns[6].Id).Conversation.Contains("回答7"), "重新生成不引用被替换的回答");
+    using (var withMemory = JsonDocument.Parse(DeepSeekClient.BuildRequestJson("追问", "真实资料", "none", interviewMemory: memory.Conversation)))
+    {
+        var messages = withMemory.RootElement.GetProperty("messages");
+        Assert(messages[1].GetProperty("content").GetString()!.Contains("回答7") &&
+            messages[0].GetProperty("content").GetString()!.Contains("之前由助手生成的答案未经验证"), "历史仅作为对话线索进入请求");
+    }
+    using (var withoutMemory = JsonDocument.Parse(DeepSeekClient.BuildRequestJson("追问", "真实资料", "none")))
+        Assert(!withoutMemory.RootElement.GetProperty("messages")[1].GetProperty("content").GetString()!.Contains("同场面试上下文"), "关闭记忆不发送历史问答");
+    Assert(JsonSerializer.Deserialize<AppData>("{}")!.UseInterviewMemory &&
+        !JsonSerializer.Deserialize<AppData>("{\"UseInterviewMemory\":false}")!.UseInterviewMemory, "上下文开关默认值和持久化");
     var screenshot = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l3sAAAAASUVORK5CYII=");
     using (var vision = JsonDocument.Parse(DeepSeekClient.BuildRequestJson("请写 SQL", "", "high", screenshot)))
     {

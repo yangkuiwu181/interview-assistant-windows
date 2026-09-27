@@ -74,6 +74,9 @@
           <ComboBoxItem Content="最高" Tag="max"/>
         </ComboBox>
       </StackPanel>
+      <CheckBox x:Name="InterviewMemoryCheck" Content="使用本场面试上下文（最近 5 轮）" Margin="2,10,0,0"/>
+      <TextBlock Text="仅关联当前场次；此前答案只帮助理解追问，个人经历以资料为准。开启后会增加模型用量。"
+                 Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="2,4,0,0" FontSize="11"/>
       <WrapPanel Margin="0,11,0,0">
         <Button Content="生成回答" Style="{StaticResource PrimaryButtonStyle}" Click="Generate_Click"/>
         <Button Content="重新生成" Click="Regenerate_Click"/>

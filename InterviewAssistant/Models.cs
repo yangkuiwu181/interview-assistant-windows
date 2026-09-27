@@ -40,6 +40,8 @@ public sealed class InterviewTurn
     public string Answer { get; set; } = "";
     public double? FirstTextLatencyMs { get; set; }
     public bool Ignored { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Completed { get; set; }
 }
 
 public sealed class InterviewSession
@@ -60,6 +62,7 @@ public sealed class AppData
     public string TencentAppId { get; set; } = "";
     public string TencentSecretId { get; set; } = "";
     public string DeepSeekReasoningEffort { get; set; } = "none";
+    public bool UseInterviewMemory { get; set; } = true;
     public List<AnswerRule>? AnswerRules { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? AiAnswerInstructions { get; set; }

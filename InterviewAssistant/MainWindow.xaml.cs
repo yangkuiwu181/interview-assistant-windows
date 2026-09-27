@@ -51,6 +51,9 @@ public partial class MainWindow : Window
             _data.DeepSeekReasoningEffort = SelectedReasoningEffort;
             _storage.Save(_data);
         };
+        InterviewMemoryCheck.IsChecked = _data.UseInterviewMemory;
+        InterviewMemoryCheck.Checked += InterviewMemoryCheck_Changed;
+        InterviewMemoryCheck.Unchecked += InterviewMemoryCheck_Changed;
         RefreshAnswerRules();
         RefreshDocumentGroups();
         RefreshSessionViews(_data.ActiveSessionId);
@@ -250,7 +253,7 @@ public partial class MainWindow : Window
         QuestionBox.ScrollToEnd();
     }
 
-    private async Task GenerateAsync(string question, DateTime? questionEndedAtUtc = null)
+    private async Task GenerateAsync(string question, DateTime? questionEndedAtUtc = null, Guid? excludedTurnId = null)
     {
         var effort = SelectedReasoningEffort;
         var screenshot = _pendingScreenImage;
@@ -260,7 +263,10 @@ public partial class MainWindow : Window
         _answerToken = new CancellationTokenSource();
         var token = _answerToken.Token;
         var session = SessionHistory.EnsureActive(_data, DateTime.UtcNow);
-        var turn = new InterviewTurn { Question = question, SessionId = session.Id };
+        var memory = _data.UseInterviewMemory
+            ? InterviewMemory.Prepare(_data.Turns, session.Id, question, excludedTurnId)
+            : new InterviewMemoryContext("", question);
+        var turn = new InterviewTurn { Question = question, SessionId = session.Id, Completed = false };
         _activeTurn = turn;
         _data.Turns.Insert(0, turn);
         _storage.Save(_data);
@@ -268,7 +274,7 @@ public partial class MainWindow : Window
         AnswerText.Text = "正在生成…";
         var effortLabel = (ReasoningEffortCombo.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? effort;
         StatusText.Text = effort == "none" ? "正在生成回答" : $"DeepSeek 正在思考（{effortLabel}）…";
-        var context = DocumentService.RelevantContext(_data.Documents, question);
+        var context = DocumentService.RelevantContext(_data.Documents, memory.SearchQuery);
         var first = true;
         try
         {
@@ -285,9 +291,10 @@ public partial class MainWindow : Window
                 }
                 turn.Answer += delta;
                 AnswerText.Text += delta;
-            }), token, screenshot, customInstructions);
+            }), token, screenshot, customInstructions, memory.Conversation);
             if (_activeTurn != turn) return;
             turn.FirstTextLatencyMs ??= latency;
+            turn.Completed = !string.IsNullOrWhiteSpace(turn.Answer);
             StatusText.Text = turn.FirstTextLatencyMs.HasValue ? $"回答完成 · 首段 {turn.FirstTextLatencyMs.Value / 1000:F1} 秒" : "回答完成（无正文）";
             _storage.Save(_data);
             UpdateLatencyStats();
@@ -315,7 +322,19 @@ public partial class MainWindow : Window
         _ = GenerateAsync(question, DateTime.UtcNow);
     }
 
-    private void Regenerate_Click(object sender, RoutedEventArgs e) => Generate_Click(sender, e);
+    private void Regenerate_Click(object sender, RoutedEventArgs e)
+    {
+        var question = QuestionBox.Text.Trim();
+        if (question.Length == 0) { StatusText.Text = "请先填写问题。"; return; }
+        _startNewQuestionOnNextSentence = true;
+        _ = GenerateAsync(question, DateTime.UtcNow, _activeTurn?.Id);
+    }
+
+    private void InterviewMemoryCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        _data.UseInterviewMemory = InterviewMemoryCheck.IsChecked == true;
+        _storage.Save(_data);
+    }
 
     private void Ignore_Click(object sender, RoutedEventArgs e)
     {
@@ -634,6 +653,7 @@ public partial class MainWindow : Window
         _data.TencentAppId = AppIdBox.Text.Trim();
         _data.TencentSecretId = SecretIdBox.Text.Trim();
         _data.DeepSeekReasoningEffort = SelectedReasoningEffort;
+        _data.UseInterviewMemory = InterviewMemoryCheck.IsChecked == true;
         _data.AiAnswerInstructions = null;
         _storage.Save(_data);
         _storage.SaveSecret("tencent", SecretKeyBox.Password);
