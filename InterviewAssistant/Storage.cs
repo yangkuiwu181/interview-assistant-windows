@@ -12,7 +12,43 @@ public sealed class Storage
 
     public Storage(string? directory = null)
     {
-        _directory = directory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "InterviewAssistant");
+        if (directory is not null)
+        {
+            _directory = directory;
+            return;
+        }
+
+        // LocalAppData can be redirected into a package-private folder when launched
+        // from a packaged host. A folder in the user's profile is shared by both launch paths.
+        var shared = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".interview-assistant");
+        var legacy = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "InterviewAssistant");
+        if (!File.Exists(Path.Combine(shared, "data.json")) && File.Exists(Path.Combine(legacy, "data.json")))
+        {
+            try { CopyLegacyData(legacy, shared); }
+            catch
+            {
+                // Keep the old data accessible if migration cannot finish.
+                _directory = legacy;
+                return;
+            }
+        }
+        _directory = shared;
+    }
+
+    private static void CopyLegacyData(string legacy, string shared)
+    {
+        Directory.CreateDirectory(shared);
+        foreach (var name in new[] { "deepseek.secret", "tencent.secret", "data.json" })
+        {
+            var source = Path.Combine(legacy, name);
+            var destination = Path.Combine(shared, name);
+            if (!File.Exists(source) || File.Exists(destination)) continue;
+            // Read/write bytes instead of File.Copy: the old package store may use EFS,
+            // which cannot preserve its encryption attribute at the shared destination.
+            var temporary = destination + ".migration.tmp";
+            File.WriteAllBytes(temporary, File.ReadAllBytes(source));
+            File.Move(temporary, destination);
+        }
     }
 
     public AppData Load()

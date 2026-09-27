@@ -53,6 +53,20 @@ try
     var store = new Storage(Path.Combine(directory, "store"));
     store.Save(new AppData { DeepSeekReasoningEffort = "high", Documents = [new SourceDocument { Name = "resume.txt", Text = "支付系统" }] });
     Assert(store.Load().Documents.Single().Text == "支付系统" && store.Load().DeepSeekReasoningEffort == "high", "本地资料和思考强度持久化");
+    var legacyDirectory = Path.Combine(directory, "legacy-data");
+    var sharedDirectory = Path.Combine(directory, "shared-data");
+    Directory.CreateDirectory(legacyDirectory);
+    File.WriteAllText(Path.Combine(legacyDirectory, "data.json"), JsonSerializer.Serialize(new AppData
+    {
+        Documents = [new SourceDocument { Kind = DocumentKind.Knowledge, Name = "notes.txt", Text = "原有资料" }]
+    }));
+    File.WriteAllBytes(Path.Combine(legacyDirectory, "deepseek.secret"), [1, 2, 3]);
+    var migrate = typeof(Storage).GetMethod("CopyLegacyData", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+    migrate.Invoke(null, [legacyDirectory, sharedDirectory]);
+    Assert(new Storage(sharedDirectory).Load().Documents.Single().Text == "原有资料" &&
+        File.ReadAllBytes(Path.Combine(sharedDirectory, "deepseek.secret")).SequenceEqual(new byte[] { 1, 2, 3 }), "旧资料和密钥迁移");
+    migrate.Invoke(null, [legacyDirectory, sharedDirectory]);
+    Assert(new Storage(sharedDirectory).Load().Documents.Count == 1, "重复迁移不覆盖已有资料");
     var oldSettings = JsonSerializer.Deserialize<AppData>("{}")!;
     Assert(AnswerRules.Migrate(oldSettings) && oldSettings.AnswerRules!.Count == 3 &&
         oldSettings.AnswerRules[0].Text.Contains("优先使用资料里的原话回答"), "旧设置自动拆分预设回答要求");
