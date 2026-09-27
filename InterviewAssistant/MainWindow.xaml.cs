@@ -525,9 +525,9 @@ public partial class MainWindow : Window
             turn.SessionId == session.Id && !turn.Ignored);
         var note = new InterviewSpeech { SessionId = session.Id, TurnId = linkedTurn?.Id, Text = sentence.Trim() };
         _data.Speeches.Add(note);
+        if (linkedTurn is not null) _startNewQuestionOnNextSentence = true;
         _storage.Save(_data);
         RefreshSessionViews(session.Id);
-        UpdateSelectedSpokenText();
         MicrophoneHintText.Text = $"已记录我的口述（本场 { _data.Speeches.Count(item => item.SessionId == session.Id) } 句）";
     }
 
@@ -793,32 +793,13 @@ public partial class MainWindow : Window
     private void HistoryList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_refreshingHistory) return;
-        if (HistoryList.SelectedItem is not InterviewTurn turn) return;
+        if (HistoryList.SelectedItem is not InterviewRecordItem record) return;
+        var turn = record.Turn;
         _startNewQuestionOnNextSentence = true;
         ClearPendingScreenshot();
         QuestionBox.Text = turn.Question;
         AnswerText.Text = string.IsNullOrWhiteSpace(turn.Answer) ? "这道题已记录，尚未生成答案。" : turn.Answer;
         _activeTurn = turn;
-        UpdateSelectedSpokenText();
-    }
-
-    private void UpdateSelectedSpokenText()
-    {
-        var turn = HistoryList.SelectedItem as InterviewTurn;
-        var notes = turn is null ? [] : _data.Speeches.Where(note => note.TurnId == turn.Id)
-            .OrderBy(note => note.AtUtc).Select(note => note.Text).ToList();
-        SelectedSpokenText.Text = notes.Count == 0 ? "尚无录到的口述" : string.Join(" ", notes);
-    }
-
-    private void SpeechSessionCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        var sessionId = (SpeechSessionCombo.SelectedItem as InterviewSession)?.Id;
-        var notes = _data.Speeches.Where(note => note.SessionId == sessionId)
-            .OrderBy(note => note.AtUtc).ToList();
-        SpeechList.ItemsSource = notes;
-        SpeechCountText.Text = sessionId is null ? "请先选择面试场次" : $"本场已记录 {notes.Count} 句口述";
-        SpeechEditor.Clear();
-        SaveSpeechButton.IsEnabled = DeleteSpeechButton.IsEnabled = false;
     }
 
     private void SpeechList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -845,9 +826,8 @@ public partial class MainWindow : Window
         note.Text = text;
         note.TurnId = (SpeechTurnCombo.SelectedItem as SpeechTurnOption)?.TurnId;
         _storage.Save(_data);
-        RefreshSpeechViews(note.SessionId);
+        RefreshSessionViews(note.SessionId);
         SpeechList.SelectedItem = note;
-        UpdateSelectedSpokenText();
         StatusText.Text = "已保存口述文字与问题关联，下次生成回答时生效。";
     }
 
@@ -856,18 +836,20 @@ public partial class MainWindow : Window
         if (SpeechList.SelectedItem is not InterviewSpeech note) return;
         _data.Speeches.Remove(note);
         _storage.Save(_data);
-        RefreshSpeechViews(note.SessionId);
-        UpdateSelectedSpokenText();
+        RefreshSessionViews(note.SessionId);
         StatusText.Text = "已删除这句口述。";
     }
 
-    private void RefreshSpeechViews(Guid? selectId = null)
+    private void RefreshSpeechList(Guid? sessionId)
     {
-        var sessions = _data.Sessions.OrderByDescending(session => session.StartedAtUtc).ToList();
-        SpeechSessionCombo.ItemsSource = sessions;
-        SpeechSessionCombo.SelectedItem = sessions.FirstOrDefault(session => session.Id == selectId)
-            ?? sessions.FirstOrDefault();
-        SpeechSessionCombo_SelectionChanged(SpeechSessionCombo, null!);
+        var notes = _data.Speeches.Where(note => note.SessionId == sessionId)
+            .OrderBy(note => note.AtUtc).ToList();
+        SpeechList.ItemsSource = notes;
+        SpeechEditor.Clear();
+        SaveSpeechButton.IsEnabled = DeleteSpeechButton.IsEnabled = false;
+        var unlinked = sessionId.HasValue ? InterviewRecords.Unlinked(_data, sessionId.Value) : [];
+        UnlinkedSpeechItems.ItemsSource = unlinked;
+        UnlinkedSpeechTitle.Visibility = unlinked.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void JumpToLatestSession_Click(object sender, RoutedEventArgs e)
@@ -875,8 +857,6 @@ public partial class MainWindow : Window
         var latest = _data.Sessions.OrderByDescending(session => session.StartedAtUtc).FirstOrDefault();
         if (latest is null) return;
         SessionCombo.SelectedItem = SessionCombo.Items.Cast<InterviewSession>()
-            .FirstOrDefault(session => session.Id == latest.Id);
-        SpeechSessionCombo.SelectedItem = SpeechSessionCombo.Items.Cast<InterviewSession>()
             .FirstOrDefault(session => session.Id == latest.Id);
     }
 
@@ -930,19 +910,20 @@ public partial class MainWindow : Window
         SessionTitleBox.Text = session?.Title ?? "";
         SessionTitleBox.IsEnabled = session is not null;
         DeleteSessionButton.IsEnabled = session is not null;
-        var turns = session is null ? [] : _data.Turns.Where(turn => turn.SessionId == session.Id).ToList();
-        var previouslySelected = HistoryList.SelectedItem as InterviewTurn;
+        var records = session is null ? [] : InterviewRecords.ForSession(_data, session.Id);
+        var previouslySelectedId = (HistoryList.SelectedItem as InterviewRecordItem)?.Turn.Id;
         _refreshingHistory = true;
         try
         {
-            HistoryList.ItemsSource = turns;
-            if (previouslySelected is not null && turns.Contains(previouslySelected))
-                HistoryList.SelectedItem = previouslySelected;
+            HistoryList.ItemsSource = records;
+            if (previouslySelectedId.HasValue)
+                HistoryList.SelectedItem = records.FirstOrDefault(record => record.Turn.Id == previouslySelectedId);
         }
         finally { _refreshingHistory = false; }
-        HistoryCountText.Text = session is null ? "请先选择面试场次" : $"本场已记录 {turns.Count} 个问题";
-        HistoryEmptyText.Visibility = turns.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        UpdateSelectedSpokenText();
+        var speechCount = session is null ? 0 : _data.Speeches.Count(note => note.SessionId == session.Id);
+        HistoryCountText.Text = session is null ? "请先选择面试场次" : $"本场已记录 {records.Count} 个问题 · {speechCount} 句我的口述";
+        HistoryEmptyText.Visibility = records.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        RefreshSpeechList(session?.Id);
         UpdateLatencyStats();
         UpdateUsageText();
     }
@@ -965,12 +946,11 @@ public partial class MainWindow : Window
         SessionCombo.ItemsSource = sessions;
         SessionCombo.SelectedItem = sessions.FirstOrDefault(session => session.Id == selectId) ?? sessions.FirstOrDefault();
         SessionCombo_SelectionChanged(SessionCombo, null!);
-        RefreshSpeechViews(selectId);
         var latest = sessions.FirstOrDefault();
         var questions = latest is null ? 0 : _data.Turns.Count(turn => turn.SessionId == latest.Id);
         var speeches = latest is null ? 0 : _data.Speeches.Count(note => note.SessionId == latest.Id);
         RecordSummaryText.Text = latest is null ? "还没有面试记录" : $"最近一场：{questions} 个问题 · {speeches} 句口述";
-        RecordsExpander.Header = $"我的口述、资料与记录（{questions} 问 · {speeches} 句）";
+        RecordsExpander.Header = $"面试记录与资料（{questions} 问 · {speeches} 句）";
         UpdateCurrentSessionText();
     }
 

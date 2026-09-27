@@ -74,6 +74,17 @@ try
                 saved.Turns[0].Question.Contains("你最近的项目") && saved.Turns[0].Completed == false &&
                 saved.Speeches.Count == 1 && saved.Speeches[0].TurnId == saved.Turns[0].Id,
                 "识别到问题和我的口述后无需生成答案也会按场次保存");
+            var grouped = InterviewRecords.ForSession(saved, saved.Sessions[0].Id);
+            Assert(grouped.Count == 1 && grouped[0].SpokenAnswer.Contains("我最近负责支付系统") &&
+                InterviewRecords.Unlinked(saved, saved.Sessions[0].Id).Count == 0,
+                "面试记录把实际口述放到对应问题下");
+            heard.Invoke(window, ["那你后来怎么优化的？"]);
+            saved = recordingStore.Load();
+            grouped = InterviewRecords.ForSession(saved, saved.Sessions[0].Id);
+            Assert(grouped.Count == 2 && grouped[0].SpokenAnswer.Contains("支付系统") &&
+                grouped[1].Question.Contains("后来怎么优化") &&
+                grouped[1].SpokenAnswer == "尚未录到我的回答",
+                "我的回答结束后下一次面试官提问单独成题");
         }
         catch (Exception ex) { recordingError = ex; }
     });
@@ -155,6 +166,12 @@ try
         spokenMemory.Conversation.Contains("未关联问题的口述"), "实际口述优先、同场隔离及近期未关联口述");
     Assert(InterviewMemory.Prepare([], memorySession, "追问", speeches: spokenNotes).Conversation.Contains("未关联问题的口述"),
         "没有生成上一题稿子时仍可参考近期口述");
+    var recordData = new AppData { Turns = memoryTurns, Speeches = spokenNotes };
+    var unlinkedRecords = InterviewRecords.Unlinked(recordData, memorySession);
+    Assert(unlinkedRecords.Count == 1 && unlinkedRecords[0].Text == "未关联问题的口述" &&
+        InterviewRecords.ForSession(recordData, memorySession).All(item =>
+            !item.SpokenAnswer.Contains("别场口述") && !item.SpokenAnswer.Contains("未关联问题的口述")),
+        "未关联口述保留在本场单独区域，别场口述不会混入问题");
     spokenNotes[0].TurnId = memoryTurns[5].Id;
     spokenNotes[1].TurnId = memoryTurns[5].Id;
     var correctedLink = InterviewMemory.Prepare(memoryTurns, memorySession, "继续追问", speeches: spokenNotes);
