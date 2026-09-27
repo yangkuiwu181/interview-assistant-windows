@@ -6,7 +6,8 @@ namespace InterviewAssistant;
 
 public sealed class AudioCapture : IDisposable
 {
-    private WasapiLoopbackCapture? _capture;
+    private WasapiCapture? _capture;
+    private readonly bool _microphone;
     private readonly List<byte> _pcm = [];
     private double _inputPosition;
     private double _nextOutputPosition;
@@ -14,10 +15,12 @@ public sealed class AudioCapture : IDisposable
     private Timer? _silenceTimer;
     private long _lastPacketTicks;
     public event Action<byte[]>? PcmReady;
-    public static IReadOnlyList<MMDevice> Devices()
+    public AudioCapture(bool microphone = false) => _microphone = microphone;
+
+    public static IReadOnlyList<MMDevice> Devices(bool microphone = false)
     {
         using var enumerator = new MMDeviceEnumerator();
-        return enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active).ToList();
+        return enumerator.EnumerateAudioEndPoints(microphone ? DataFlow.Capture : DataFlow.Render, DeviceState.Active).ToList();
     }
 
     public void Start(MMDevice device)
@@ -26,7 +29,7 @@ public sealed class AudioCapture : IDisposable
         _inputPosition = _nextOutputPosition = 0;
         _lastSample = 0;
         _pcm.Clear();
-        _capture = new WasapiLoopbackCapture(device);
+        _capture = _microphone ? new WasapiCapture(device) : new WasapiLoopbackCapture(device);
         _capture.DataAvailable += OnData;
         _capture.RecordingStopped += (_, _) => { };
         try { _capture.StartRecording(); }

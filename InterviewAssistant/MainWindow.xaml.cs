@@ -17,15 +17,19 @@ public partial class MainWindow : Window
     private readonly AppData _data;
     private readonly AudioCapture _capture = new();
     private readonly TencentAsr _asr = new();
+    private readonly AudioCapture _microphoneCapture = new(microphone: true);
+    private readonly TencentAsr _microphoneAsr = new();
     private readonly DeepSeekClient _deepSeek = new();
     private readonly DispatcherTimer _settingsTimer = new() { Interval = TimeSpan.FromMilliseconds(600) };
     private readonly DispatcherTimer _silencePauseTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private static readonly TimeSpan SilencePauseDelay = TimeSpan.FromMinutes(3);
     private CancellationTokenSource? _answerToken;
     private InterviewTurn? _activeTurn;
+    private Guid? _speechTargetTurnId;
     private byte[]? _pendingScreenImage;
     private bool _startNewQuestionOnNextSentence;
     private bool _listening;
+    private bool _microphoneRecording;
     private bool _closing;
     private long _lastAudibleTimestamp;
     private int _audibleFrames;
@@ -54,10 +58,14 @@ public partial class MainWindow : Window
         InterviewMemoryCheck.IsChecked = _data.UseInterviewMemory;
         InterviewMemoryCheck.Checked += InterviewMemoryCheck_Changed;
         InterviewMemoryCheck.Unchecked += InterviewMemoryCheck_Changed;
+        RecordMyVoiceCheck.IsChecked = _data.RecordMyVoice;
+        RecordMyVoiceCheck.Checked += RecordMyVoiceCheck_Changed;
+        RecordMyVoiceCheck.Unchecked += RecordMyVoiceCheck_Changed;
         RefreshAnswerRules();
         RefreshDocumentGroups();
         RefreshSessionViews(_data.ActiveSessionId);
         RefreshDevices();
+        RefreshMicrophones();
         AppIdBox.TextChanged += Settings_Changed;
         SecretIdBox.TextChanged += Settings_Changed;
         SecretKeyBox.PasswordChanged += Settings_Changed;
@@ -93,6 +101,24 @@ public partial class MainWindow : Window
             if (_listening) AsrHintText.Text = $"腾讯云识别：已发送 {sent / 5d:F0} 秒（有声 {Volatile.Read(ref _audibleFrames) / 5d:F1} 秒）· 收到 {received} 条文字结果";
         });
         _asr.Error += error => Dispatcher.BeginInvoke(() => _ = HandleAsrErrorAsync(error));
+        _microphoneCapture.PcmReady += pcm =>
+        {
+            _microphoneAsr.TrySend(pcm);
+            var peak = 0;
+            for (var i = 0; i + 1 < pcm.Length; i += 2)
+                peak = Math.Max(peak, Math.Abs((int)BitConverter.ToInt16(pcm, i)));
+            if (peak >= 328) Interlocked.Exchange(ref _lastAudibleTimestamp, Stopwatch.GetTimestamp());
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (_microphoneRecording) MicrophoneLevelBar.Value = Math.Min(100, peak * 100d / 32768);
+            });
+        };
+        _microphoneAsr.StableSentence += sentence => Dispatcher.BeginInvoke(() => OnMyStableSentence(sentence));
+        _microphoneAsr.InterimSentence += sentence => Dispatcher.BeginInvoke(() =>
+        {
+            if (_microphoneRecording) MicrophoneHintText.Text = "我的回答识别中：" + sentence;
+        });
+        _microphoneAsr.Error += error => Dispatcher.BeginInvoke(() => _ = HandleMicrophoneErrorAsync(error));
     }
 
     private void RefreshDevices()
@@ -100,6 +126,36 @@ public partial class MainWindow : Window
         var devices = AudioCapture.Devices();
         DeviceCombo.ItemsSource = devices;
         DeviceCombo.SelectedItem = devices.FirstOrDefault(x => x.ID == _data.SelectedDeviceId) ?? devices.FirstOrDefault();
+    }
+
+    private void RefreshMicrophones()
+    {
+        var devices = AudioCapture.Devices(microphone: true);
+        MicrophoneCombo.ItemsSource = devices;
+        MicrophoneCombo.SelectedItem = devices.FirstOrDefault(x => x.ID == _data.SelectedMicrophoneId) ?? devices.FirstOrDefault();
+        if (devices.Count == 0) MicrophoneHintText.Text = "没有找到可用的麦克风，请检查 Windows 麦克风权限。";
+    }
+
+    private void RefreshMicrophones_Click(object sender, RoutedEventArgs e) => RefreshMicrophones();
+
+    private void MicrophoneCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (MicrophoneCombo.SelectedItem is not MMDevice device) return;
+        _data.SelectedMicrophoneId = device.ID;
+        _storage.Save(_data);
+    }
+
+    private async void RecordMyVoiceCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        _data.RecordMyVoice = RecordMyVoiceCheck.IsChecked == true;
+        _storage.Save(_data);
+        if (!_listening) return;
+        try
+        {
+            if (_data.RecordMyVoice) await StartMicrophoneAsync();
+            else await StopMicrophoneAsync();
+        }
+        catch (Exception ex) { MicrophoneHintText.Text = "麦克风启动失败：" + ex.Message; }
     }
 
     private void RefreshDevices_Click(object sender, RoutedEventArgs e) => RefreshDevices();
@@ -184,6 +240,11 @@ public partial class MainWindow : Window
         try { _capture.Start(device); }
         catch { await _asr.StopAsync(); throw; }
         _listening = true;
+        if (RecordMyVoiceCheck.IsChecked == true)
+        {
+            try { await StartMicrophoneAsync(); }
+            catch (Exception ex) { MicrophoneHintText.Text = "麦克风启动失败：" + ex.Message; }
+        }
         _silencePauseTimer.Start();
         AsrHintText.Text = "腾讯云识别：已连接，等待识别文字";
         DeviceCombo.IsEnabled = false;
@@ -201,6 +262,7 @@ public partial class MainWindow : Window
         _listening = false;
         _capture.Stop();
         await _asr.StopAsync();
+        await StopMicrophoneAsync();
         AsrHintText.Text = "腾讯云识别：已暂停";
         AudioLevelBar.Value = 0;
         AudioHintText.Text = "声音检测：已暂停";
@@ -237,9 +299,57 @@ public partial class MainWindow : Window
         StatusText.Text = error;
     }
 
+    private async Task StartMicrophoneAsync()
+    {
+        if (_microphoneRecording) return;
+        if (MicrophoneCombo.SelectedItem is not MMDevice device)
+            throw new InvalidOperationException("没有可用的麦克风，请检查设备与权限。");
+        MicrophoneHintText.Text = "正在连接麦克风识别…";
+        await _microphoneAsr.StartAsync(AppIdBox.Text.Trim(), SecretIdBox.Text.Trim(), SecretKeyBox.Password);
+        try { _microphoneCapture.Start(device); }
+        catch { await _microphoneAsr.StopAsync(); throw; }
+        _microphoneRecording = true;
+        MicrophoneCombo.IsEnabled = false;
+        RefreshMicrophonesButton.IsEnabled = false;
+        MicrophoneHintText.Text = "正在记录我的口述；只保存文字，不保存音频。";
+    }
+
+    private async Task StopMicrophoneAsync()
+    {
+        _microphoneRecording = false;
+        _microphoneCapture.Stop();
+        await _microphoneAsr.StopAsync();
+        MicrophoneLevelBar.Value = 0;
+        MicrophoneCombo.IsEnabled = true;
+        RefreshMicrophonesButton.IsEnabled = true;
+        MicrophoneHintText.Text = "麦克风已暂停；只保存已识别的文字。";
+    }
+
+    private async Task HandleMicrophoneErrorAsync(string error)
+    {
+        await StopMicrophoneAsync();
+        MicrophoneHintText.Text = error;
+    }
+
+    private void OnMyStableSentence(string sentence)
+    {
+        if (!_microphoneRecording || string.IsNullOrWhiteSpace(sentence)) return;
+        var session = SessionHistory.EnsureActive(_data, DateTime.UtcNow);
+        var linkedTurn = _data.Turns.FirstOrDefault(turn => turn.Id == _speechTargetTurnId &&
+            turn.SessionId == session.Id && !turn.Ignored);
+        var note = new InterviewSpeech { SessionId = session.Id, TurnId = linkedTurn?.Id, Text = sentence.Trim() };
+        _data.Speeches.Add(note);
+        _storage.Save(_data);
+        RefreshSessionViews(session.Id);
+        RefreshSpeechViews(session.Id);
+        UpdateSelectedSpokenText();
+        MicrophoneHintText.Text = $"已记录我的口述（本场 { _data.Speeches.Count(item => item.SessionId == session.Id) } 句）";
+    }
+
     private void OnStableSentence(string sentence)
     {
         if (!_listening || string.IsNullOrWhiteSpace(sentence)) return;
+        _speechTargetTurnId = null;
         InterimText.Text = "";
         if (_startNewQuestionOnNextSentence)
         {
@@ -264,10 +374,11 @@ public partial class MainWindow : Window
         var token = _answerToken.Token;
         var session = SessionHistory.EnsureActive(_data, DateTime.UtcNow);
         var memory = _data.UseInterviewMemory
-            ? InterviewMemory.Prepare(_data.Turns, session.Id, question, excludedTurnId)
+            ? InterviewMemory.Prepare(_data.Turns, session.Id, question, excludedTurnId, _data.Speeches)
             : new InterviewMemoryContext("", question);
         var turn = new InterviewTurn { Question = question, SessionId = session.Id, Completed = false };
         _activeTurn = turn;
+        _speechTargetTurnId = turn.Id;
         _data.Turns.Insert(0, turn);
         _storage.Save(_data);
         RefreshSessionViews(session.Id);
@@ -338,6 +449,7 @@ public partial class MainWindow : Window
 
     private void Ignore_Click(object sender, RoutedEventArgs e)
     {
+        _speechTargetTurnId = null;
         _startNewQuestionOnNextSentence = false;
         _answerToken?.Cancel();
         if (_activeTurn is not null) _activeTurn.Ignored = true;
@@ -483,11 +595,68 @@ public partial class MainWindow : Window
         QuestionBox.Text = turn.Question;
         AnswerText.Text = turn.Answer;
         _activeTurn = turn;
+        UpdateSelectedSpokenText();
+    }
+
+    private void UpdateSelectedSpokenText()
+    {
+        var turn = HistoryList.SelectedItem as InterviewTurn;
+        var notes = turn is null ? [] : _data.Speeches.Where(note => note.TurnId == turn.Id)
+            .OrderBy(note => note.AtUtc).Select(note => note.Text).ToList();
+        SelectedSpokenText.Text = notes.Count == 0 ? "尚无录到的口述" : string.Join(" ", notes);
+    }
+
+    private void SpeechSessionCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        var sessionId = (SpeechSessionCombo.SelectedItem as InterviewSession)?.Id;
+        var notes = _data.Speeches.Where(note => note.SessionId == sessionId)
+            .OrderBy(note => note.AtUtc).ToList();
+        SpeechList.ItemsSource = notes;
+        SpeechEditor.Clear();
+        SaveSpeechButton.IsEnabled = DeleteSpeechButton.IsEnabled = false;
+    }
+
+    private void SpeechList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        var note = SpeechList.SelectedItem as InterviewSpeech;
+        SpeechEditor.Text = note?.Text ?? "";
+        SaveSpeechButton.IsEnabled = DeleteSpeechButton.IsEnabled = note is not null;
+    }
+
+    private void SaveSpeech_Click(object sender, RoutedEventArgs e)
+    {
+        if (SpeechList.SelectedItem is not InterviewSpeech note) return;
+        var text = SpeechEditor.Text.Trim();
+        if (text.Length == 0) { StatusText.Text = "转写不能为空；可用“删除这句”移除。"; return; }
+        note.Text = text;
+        _storage.Save(_data);
+        RefreshSpeechViews(note.SessionId);
+        UpdateSelectedSpokenText();
+        StatusText.Text = "已修正口述文字，下次生成回答时生效。";
+    }
+
+    private void DeleteSpeech_Click(object sender, RoutedEventArgs e)
+    {
+        if (SpeechList.SelectedItem is not InterviewSpeech note) return;
+        _data.Speeches.Remove(note);
+        _storage.Save(_data);
+        RefreshSpeechViews(note.SessionId);
+        UpdateSelectedSpokenText();
+        StatusText.Text = "已删除这句口述。";
+    }
+
+    private void RefreshSpeechViews(Guid? selectId = null)
+    {
+        var sessions = _data.Sessions.OrderByDescending(session => session.StartedAtUtc).ToList();
+        SpeechSessionCombo.ItemsSource = sessions;
+        SpeechSessionCombo.SelectedItem = sessions.FirstOrDefault(session => session.Id == selectId)
+            ?? sessions.FirstOrDefault();
     }
 
     private void NewSession_Click(object sender, RoutedEventArgs e)
     {
         _answerToken?.Cancel();
+        _speechTargetTurnId = null;
         _activeTurn = null;
         QuestionBox.Clear();
         ClearPendingScreenshot();
@@ -500,8 +669,10 @@ public partial class MainWindow : Window
         StatusText.Text = "已开始新面试";
     }
 
-    private void EndSession_Click(object sender, RoutedEventArgs e)
+    private async void EndSession_Click(object sender, RoutedEventArgs e)
     {
+        if (_listening) await StopListeningAsync();
+        _speechTargetTurnId = null;
         SessionHistory.End(_data, DateTime.UtcNow);
         _storage.Save(_data);
         UpdateCurrentSessionText();
@@ -516,6 +687,7 @@ public partial class MainWindow : Window
         if (_activeTurn?.SessionId == session.Id) _answerToken?.Cancel();
         if (_data.ActiveSessionId == session.Id) SessionHistory.End(_data, DateTime.UtcNow);
         _data.Turns.RemoveAll(turn => turn.SessionId == session.Id);
+        _data.Speeches.RemoveAll(note => note.SessionId == session.Id);
         _data.Sessions.Remove(session);
         _storage.Save(_data);
         _activeTurn = null;
@@ -532,6 +704,7 @@ public partial class MainWindow : Window
         var turns = session is null ? [] : _data.Turns.Where(turn => turn.SessionId == session.Id).ToList();
         HistoryList.ItemsSource = turns;
         HistoryEmptyText.Visibility = turns.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        UpdateSelectedSpokenText();
         UpdateLatencyStats();
     }
 
@@ -552,6 +725,7 @@ public partial class MainWindow : Window
         var sessions = _data.Sessions.OrderByDescending(session => session.StartedAtUtc).ToList();
         SessionCombo.ItemsSource = sessions;
         SessionCombo.SelectedItem = sessions.FirstOrDefault(session => session.Id == selectId) ?? sessions.FirstOrDefault();
+        RefreshSpeechViews(selectId);
         UpdateCurrentSessionText();
     }
 
@@ -654,6 +828,7 @@ public partial class MainWindow : Window
         _data.TencentSecretId = SecretIdBox.Text.Trim();
         _data.DeepSeekReasoningEffort = SelectedReasoningEffort;
         _data.UseInterviewMemory = InterviewMemoryCheck.IsChecked == true;
+        _data.RecordMyVoice = RecordMyVoiceCheck.IsChecked == true;
         _data.AiAnswerInstructions = null;
         _storage.Save(_data);
         _storage.SaveSecret("tencent", SecretKeyBox.Password);
@@ -680,6 +855,7 @@ public partial class MainWindow : Window
         _answerToken?.Cancel();
         await StopListeningAsync();
         _capture.Dispose();
+        _microphoneCapture.Dispose();
         SessionHistory.End(_data, DateTime.UtcNow);
         _storage.Save(_data);
         Close();

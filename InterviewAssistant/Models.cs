@@ -44,6 +44,16 @@ public sealed class InterviewTurn
     public bool? Completed { get; set; }
 }
 
+public sealed class InterviewSpeech
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid SessionId { get; set; }
+    public Guid? TurnId { get; set; }
+    public DateTime AtUtc { get; set; } = DateTime.UtcNow;
+    public string Text { get; set; } = "";
+    [JsonIgnore] public string Display => $"{AtUtc.ToLocalTime():HH:mm:ss} · {Text}";
+}
+
 public sealed class InterviewSession
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -56,6 +66,7 @@ public sealed class AppData
 {
     public List<SourceDocument> Documents { get; set; } = [];
     public List<InterviewTurn> Turns { get; set; } = [];
+    public List<InterviewSpeech> Speeches { get; set; } = [];
     public List<InterviewSession> Sessions { get; set; } = [];
     public Guid? ActiveSessionId { get; set; }
     public string? SelectedDeviceId { get; set; }
@@ -63,6 +74,8 @@ public sealed class AppData
     public string TencentSecretId { get; set; } = "";
     public string DeepSeekReasoningEffort { get; set; } = "none";
     public bool UseInterviewMemory { get; set; } = true;
+    public bool RecordMyVoice { get; set; }
+    public string? SelectedMicrophoneId { get; set; }
     public List<AnswerRule>? AnswerRules { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? AiAnswerInstructions { get; set; }

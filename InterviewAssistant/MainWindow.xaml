@@ -43,7 +43,17 @@
         <ProgressBar x:Name="AudioLevelBar" Minimum="0" Maximum="100" Height="6" Value="0" Margin="2,3,2,8"/>
         <TextBlock x:Name="AudioHintText" Text="声音检测：待机" Foreground="{StaticResource MutedBrush}" Margin="2,0,0,3" FontSize="11"/>
         <TextBlock x:Name="AsrHintText" Text="腾讯云识别：待机" Foreground="{StaticResource MutedBrush}" Margin="2,0,0,3" TextWrapping="Wrap" FontSize="11"/>
-        <TextBlock Text="连续 3 分钟没有播放声音时自动暂停监听。" Foreground="{StaticResource MutedBrush}" Margin="2,3,0,0" FontSize="11"/>
+        <CheckBox x:Name="RecordMyVoiceCheck" Content="同时记录我的回答（麦克风）" Margin="2,9,0,4"/>
+        <DockPanel>
+          <Button x:Name="RefreshMicrophonesButton" Content="刷新" Style="{StaticResource QuietButtonStyle}" DockPanel.Dock="Right" Click="RefreshMicrophones_Click" Margin="8,0,0,0"/>
+          <ComboBox x:Name="MicrophoneCombo" MinHeight="30" SelectionChanged="MicrophoneCombo_SelectionChanged">
+            <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding FriendlyName}" Foreground="{StaticResource TextBrush}"/></DataTemplate></ComboBox.ItemTemplate>
+          </ComboBox>
+        </DockPanel>
+        <ProgressBar x:Name="MicrophoneLevelBar" Minimum="0" Maximum="100" Height="5" Value="0" Margin="2,7,2,3"/>
+        <TextBlock x:Name="MicrophoneHintText" Text="默认关闭；开启会增加一路腾讯云识别用量。建议戴耳机，避免麦克风重复收到面试官声音。"
+                   Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="2,5,0,3" FontSize="11"/>
+        <TextBlock Text="播放设备（录制麦克风时也包括麦克风）连续 3 分钟静音会自动暂停。" Foreground="{StaticResource MutedBrush}" Margin="2,3,0,0" FontSize="11" TextWrapping="Wrap"/>
         <DockPanel Margin="0,10,0,0">
           <Button x:Name="StartButton" Content="开始监听" Style="{StaticResource PrimaryButtonStyle}" Click="StartButton_Click" DockPanel.Dock="Left"/>
           <TextBlock x:Name="StatusText" Text="待机" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" Margin="7,0,0,0" TextWrapping="Wrap" FontSize="11"/>
@@ -95,8 +105,25 @@
             BorderThickness="1" CornerRadius="13" Padding="18" MinHeight="230">
       <TextBlock x:Name="AnswerText" Text="等面试官说完，点击“生成回答”后显示答案。" FontSize="16" LineHeight="28" TextWrapping="Wrap"/>
     </Border>
-    <Expander Grid.Row="5" Header="资料、记录与 API 设置" Margin="0,13,0,0">
+    <Expander Grid.Row="5" Header="我的口述、资料与记录" Margin="0,13,0,0">
       <TabControl Margin="0,2,0,0">
+        <TabItem Header="我的口述">
+          <StackPanel Margin="9">
+            <TextBlock Text="录到的每句话按面试场次保存在本机，可在这里校正转写。未关联问题的话也会保留。"
+                       Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Margin="1,0,0,9"/>
+            <TextBlock Text="选择面试场次" Foreground="{StaticResource TextBrush}" Margin="1,0,0,5"/>
+            <ComboBox x:Name="SpeechSessionCombo" MinHeight="30" SelectionChanged="SpeechSessionCombo_SelectionChanged" Margin="0,0,0,8">
+              <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Title}" Foreground="{StaticResource TextBrush}"/></DataTemplate></ComboBox.ItemTemplate>
+            </ComboBox>
+            <ListBox x:Name="SpeechList" Height="160" DisplayMemberPath="Display" SelectionChanged="SpeechList_SelectionChanged"/>
+            <TextBox x:Name="SpeechEditor" MinHeight="68" MaxHeight="160" AcceptsReturn="True" TextWrapping="Wrap"
+                     VerticalScrollBarVisibility="Auto" Margin="0,8,0,4"/>
+            <WrapPanel>
+              <Button x:Name="SaveSpeechButton" Content="保存修正" Click="SaveSpeech_Click" IsEnabled="False"/>
+              <Button x:Name="DeleteSpeechButton" Content="删除这句" Style="{StaticResource DangerButtonStyle}" Click="DeleteSpeech_Click" IsEnabled="False"/>
+            </WrapPanel>
+          </StackPanel>
+        </TabItem>
         <TabItem Header="资料">
           <StackPanel Margin="9">
             <TextBlock Text="按用途收纳资料。点击分类展开，导入的文件只会放进该分类。" Foreground="#9CA3AF" TextWrapping="Wrap" Margin="2,0,0,7"/>
@@ -157,6 +184,8 @@
             <TextBlock x:Name="LatencyStatsText" Foreground="White" Margin="0,0,0,5"/>
             <ListBox x:Name="HistoryList" DisplayMemberPath="Question" Height="145" SelectionChanged="HistoryList_SelectionChanged"/>
             <TextBlock x:Name="HistoryEmptyText" Text="这场面试还没有问答记录" Foreground="#9CA3AF" Margin="2,5,0,5"/>
+            <TextBlock Text="所选问题中我的实际口述" Foreground="White" Margin="2,8,0,4"/>
+            <TextBlock x:Name="SelectedSpokenText" Text="尚无录到的口述" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" Margin="2,0,0,9"/>
             <Button x:Name="DeleteSessionButton" Content="删除所选场次及其问答" Style="{StaticResource DangerButtonStyle}" Click="DeleteSession_Click" HorizontalAlignment="Left"/>
           </StackPanel>
         </TabItem>

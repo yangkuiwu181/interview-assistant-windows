@@ -114,6 +114,22 @@ try
     Assert(InterviewMemory.Prepare(memoryTurns, anotherSession, "新问题").Conversation.Contains("别场回答") &&
         !InterviewMemory.Prepare(memoryTurns, Guid.NewGuid(), "新问题").Conversation.Contains("回答7"), "不同面试场次隔离");
     Assert(!InterviewMemory.Prepare(memoryTurns, memorySession, "问题7", memoryTurns[6].Id).Conversation.Contains("回答7"), "重新生成不引用被替换的回答");
+    var spokenNotes = new List<InterviewSpeech>
+    {
+        new() { SessionId = memorySession, TurnId = memoryTurns[6].Id, Text = "我实际说了支付接口耗时下降三成" },
+        new() { SessionId = memorySession, TurnId = memoryTurns[6].Id, AtUtc = DateTime.UtcNow.AddSeconds(1), Text = "先检查慢查询" },
+        new() { SessionId = anotherSession, TurnId = memoryTurns[6].Id, Text = "别场口述不能混入" },
+        new() { SessionId = memorySession, Text = "未关联问题的口述" }
+    };
+    var spokenMemory = InterviewMemory.Prepare(memoryTurns, memorySession, "之后怎么做？", speeches: spokenNotes);
+    Assert(spokenMemory.Conversation.Contains("我实际说了支付接口耗时下降三成 先检查慢查询") &&
+        !spokenMemory.Conversation.Contains("回答7") && !spokenMemory.Conversation.Contains("别场口述") &&
+        spokenMemory.Conversation.Contains("未关联问题的口述"), "实际口述优先、同场隔离及近期未关联口述");
+    Assert(InterviewMemory.Prepare([], memorySession, "追问", speeches: spokenNotes).Conversation.Contains("未关联问题的口述"),
+        "没有生成上一题稿子时仍可参考近期口述");
+    store.Save(new AppData { Speeches = spokenNotes, RecordMyVoice = true });
+    Assert(store.Load().Speeches.Count == 4 && store.Load().RecordMyVoice, "口述记录和开关持久化");
+    Assert(!JsonSerializer.Deserialize<AppData>("{}")!.RecordMyVoice, "麦克风录制默认关闭");
     using (var withMemory = JsonDocument.Parse(DeepSeekClient.BuildRequestJson("追问", "真实资料", "none", interviewMemory: memory.Conversation)))
     {
         var messages = withMemory.RootElement.GetProperty("messages");
@@ -153,6 +169,20 @@ try
         capture.Stop();
         Assert(packets >= 2, "系统音频采集或静音保活");
         Console.WriteLine($"PASS: WASAPI 设备 {device.FriendlyName}，收到 {packets} 个 PCM 分片");
+    }
+
+    if (args.Contains("--microphone"))
+    {
+        var device = AudioCapture.Devices(microphone: true).FirstOrDefault()
+            ?? throw new InvalidOperationException("没有可用的麦克风");
+        using var capture = new AudioCapture(microphone: true);
+        var packets = 0;
+        capture.PcmReady += pcm => { Assert(pcm.Length == 6400, "麦克风 PCM 分片长度"); Interlocked.Increment(ref packets); };
+        capture.Start(device);
+        await Task.Delay(1500);
+        capture.Stop();
+        Assert(packets >= 2, "麦克风音频采集或静音保活");
+        Console.WriteLine($"PASS: 麦克风 PCM 分片 {packets} 个");
     }
 
     var liveIndex = Array.IndexOf(args, "--asr-live");
