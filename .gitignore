@@ -3,6 +3,7 @@
 .vs/
 *.user
 dist/
+待导入资料/
 .dotnet-home/
 .env
 .env.*
